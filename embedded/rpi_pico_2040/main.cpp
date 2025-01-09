@@ -1,5 +1,11 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+//#include <mutex>
+
+#include <mlpack.hpp>
+
+using namespace mlpack;
+using namespace mlpack::util;
 
 #ifndef LED_DELAY_MS
 #define LED_DELAY_MS 250
@@ -26,13 +32,22 @@ void pico_set_led(bool led_on) {
 int main()
 {
   pico_led_init();
+  arma::Mat<float> dataset = {1, 1, 2,
+                              2, 2, 3,
+                              1, 2, 3};
+
+  mlpack::FFN<mlpack::MeanSquaredError, mlpack::GlorotInitialization> model; 
+  mlpack::PCA<> pca(true);
+  pca.Apply(dataset, 2);
   while (true)
   {
-      pico_set_led(true);
-      sleep_ms(LED_DELAY_MS);
-      pico_set_led(false);
-      sleep_ms(LED_DELAY_MS);
+    mlpack::Log::Info << "Welcome mlpack from a Raspberry PI Pico." << std::endl;
+    pico_set_led(true);
+    sleep_ms(LED_DELAY_MS);
+    pico_set_led(false);
+    sleep_ms(LED_DELAY_MS);
   }
+
 }
 
 
