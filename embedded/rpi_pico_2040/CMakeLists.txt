@@ -4,7 +4,6 @@ include(pico_sdk_import.cmake)
 
 project(RandomForest CXX C ASM)
 
-include(CMake/ConfigureCrossCompile.cmake)
 include(CMake/mlpack.cmake)
 
 set(PICO_CXX_ENABLE_EXCEPTIONS ON)
@@ -28,7 +27,7 @@ target_include_directories(main PRIVATE
 # Add pico_stdlib library which aggregates commonly used features
 target_link_libraries(main
   pico_stdlib
-  /meta/mlpack_examples/embedded/rpi_pico_2040/OpenBLAS-0.3.28/build/lib/libopenblas.a
+  /meta/mlpack_examples/embedded/OpenBLAS-0.3.30/build/lib/libopenblas.a
 )
 
 # create map/bin/hex/uf2 file in addition to ELF.
