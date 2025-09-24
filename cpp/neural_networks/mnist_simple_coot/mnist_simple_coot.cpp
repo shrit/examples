@@ -70,9 +70,9 @@ int main()
   // Getting training and validating dataset with features only and then
   // normalising
   const coot::mat trainX =
-      ConvTo<coot::mat>::From(train.submat(1, 0, train.n_rows - 1, train.n_cols - 1) / 255.0);
+      coot::conv_to<coot::mat>::from(train.submat(1, 0, train.n_rows - 1, train.n_cols - 1) / 255.0);
   const coot::mat validX =
-      ConvTo<coot::mat>::From(valid.submat(1, 0, valid.n_rows - 1, valid.n_cols - 1) / 255.0);
+      coot::conv_to<coot::mat>::from(valid.submat(1, 0, valid.n_rows - 1, valid.n_cols - 1) / 255.0);
 
   // Labels should specify the class of a data point and be in the interval [0,
   // numClasses).
@@ -88,21 +88,21 @@ int main()
   // This is intermediate layer that is needed for connection between input
   // data and relu layer. Parameters specify the number of input features
   // and number of neurons in the next layer.
-  model.Add<LinearType<coot::mat>>(H1);
+  model.Add<Linear<coot::mat>>(H1);
   // The first relu layer.
-  model.Add<ReLUType<coot::mat>>();
+  model.Add<ReLU<coot::mat>>();
   // Intermediate layer between relu layers.
-  model.Add<LinearType<coot::mat>>(H2);
+  model.Add<Linear<coot::mat>>(H2);
   // The second relu layer.
-  model.Add<ReLUType<coot::mat>>();
+  model.Add<ReLU<coot::mat>>();
   // Dropout layer for regularization. First parameter is the probability of
   // setting a specific value to 0.
-  model.Add<DropoutType<coot::mat>>(0.2);
+  model.Add<Dropout<coot::mat>>(0.2);
   // Intermediate layer.
-  model.Add<LinearType<coot::mat>>(10);
+  model.Add<Linear<coot::mat>>(10);
   // LogSoftMax layer is used together with NegativeLogLikelihood for mapping
   // output values to log of probabilities of being a specific class.
-  model.Add<LogSoftMaxType<coot::mat>>();
+  model.Add<LogSoftMax<coot::mat>>();
 
   cout << "Start training ..." << endl;
 

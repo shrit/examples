@@ -6,6 +6,7 @@
 
 TARGET := mnist_simple_coot
 SRC := mnist_simple_coot.cpp
+#SRC := main.cpp
 LIBS_NAME := bandicoot
 
 CXX := g++
@@ -19,7 +20,7 @@ LDFLAGS  += -fopenmp
 # default compiler search path.
 
 INCLFLAGS := -I .
-INCLFLAGS := -I/meta/tests/ensmallen/include
+INCLFLAGS := -I/meta/ensmallen/include
 # If you have mlpack or ensmallen installed somewhere nonstandard, uncomment and
 # update the lines below.
 INCLFLAGS += -I/opt/cuda/targets/x86_64-linux/include
