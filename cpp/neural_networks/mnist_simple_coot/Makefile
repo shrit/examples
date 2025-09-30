@@ -7,10 +7,10 @@
 TARGET := mnist_simple_coot
 SRC := mnist_simple_coot.cpp
 #SRC := main.cpp
-LIBS_NAME := bandicoot
+LIBS_NAME := bandicoot openblas armadillo
 
 CXX := g++
-CXXFLAGS += -std=c++17 -Wall -Wextra -O3 -DNDEBUG -fopenmp
+CXXFLAGS += -std=c++17 -Wall -Wextra -O3 -g -DNDEBUG -fopenmp
 # Use these CXXFLAGS instead if you want to compile with debugging symbols and
 # without optimizations.
 # CXXFLAGS += -std=c++14 -Wall -Wextra -g -O0

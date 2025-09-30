@@ -15,7 +15,7 @@
  */
 #define MLPACK_ENABLE_ANN_SERIALIZATION
 #define MLPACK_HAS_COOT
-
+#include <armadillo>
 #include <bandicoot>
 #include <mlpack.hpp>
 
@@ -56,7 +56,7 @@ int main()
   // Labeled dataset that contains data for training is loaded from CSV file,
   // rows represent features, columns represent data points.
   arma::mat dataset;
-  data::Load("../data/mnist_train.csv", dataset, true);
+  data::Load("../../../data/mnist_train.csv", dataset, true);
 
   // Originally on Kaggle dataset CSV file has header, so it's necessary to
   // get rid of the this row, in Armadillo representation it's the first column.
@@ -74,6 +74,8 @@ int main()
   const coot::mat validX =
       coot::conv_to<coot::mat>::from(valid.submat(1, 0, valid.n_rows - 1, valid.n_cols - 1) / 255.0);
 
+//  trainX.raw_print("trainx");
+//  validX.raw_print("validX");
   // Labels should specify the class of a data point and be in the interval [0,
   // numClasses).
 
@@ -104,7 +106,7 @@ int main()
   // output values to log of probabilities of being a specific class.
   model.Add<LogSoftMax<coot::mat>>();
 
-  cout << "Start training ..." << endl;
+  cout << "Optimiser definition ..." << endl;
 
   // Set parameters for the Adam optimizer.
   ens::Adam optimizer(
@@ -121,6 +123,7 @@ int main()
   // Declare callback to store best training weights.
   ens::StoreBestCoordinates<coot::mat> bestCoordinates;
 
+  cout << "Start training ..." << endl;
   // Train neural network. If this is the first iteration, weights are
   // random, using current values as starting point otherwise.
   model.Train(trainX,
