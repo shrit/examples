@@ -49,6 +49,18 @@ std::atomic<bool> g_stop{false};
 
 void HandleSigint(int) { g_stop = true; }
 
+// Return the next command-line value after argv[i], advancing i.  Exits with an
+// error if the option was given without a value.
+const char* NextArg(int& i, int argc, char** argv, const char* name)
+{
+  if (i + 1 >= argc)
+  {
+    std::fprintf(stderr, "error: %s requires a value\n", name);
+    std::exit(2);
+  }
+  return argv[++i];
+}
+
 const char* const kLabels[] = {"sitting", "walking", "walking_fast",
                                 "stairs_up", "stairs_down", "squat" };
 
@@ -139,10 +151,13 @@ void Usage(const char* prog)
 {
   std::printf(
       "Record GY-89 sensor data to a CSV file (one file per recording, named\n"
-      "<label>_<date>.csv).\n\n"
-      "Usage: %s (--label NAME | --tui) [options]\n"
+      "<label>_<date>.csv).  The interactive ncurses TUI runs by default;\n"
+      "use --no-tui for plain command-line recording.\n\n"
+      "Usage: %s [options]            (interactive TUI)\n"
+      "       %s --no-tui --label NAME [options]   (command line)\n"
+      "      --no-tui        plain command-line recording (needs --label)\n"
+      "      --tui           force the interactive TUI (the default)\n"
       "  -l, --label NAME    label for this recording (used as the file name)\n"
-      "      --tui           interactive ncurses label picker (if built in)\n"
       "  -o, --out-dir DIR   directory for the output file (default .)\n"
       "  -s, --sensors LIST  comma list of accel,gyro,mag,baro -- or all "
       "(default all)\n"
@@ -151,7 +166,7 @@ void Usage(const char* prog)
       "  -t, --duration SEC  seconds to record, 0 = until Ctrl-C (default 0)\n"
       "      --mag-cal FILE  apply a magnetometer calibration file\n"
       "  -h, --help          show this help\n",
-      prog);
+      prog, prog);
 }
 
 // Command-line recording loop: sample the selected sensors at `rateHz`, writing
@@ -160,13 +175,13 @@ int RunCommandLine(IMU& imu, BMP180& baro, const Sensors& sensors,
                    std::FILE* csv, double rateHz, double durationSec)
 {
   using namespace std::chrono;
-  const auto period =
+  const steady_clock::duration period =
       duration_cast<steady_clock::duration>(duration<double>(1.0 / rateHz));
   const uint64_t durationMicros =
       static_cast<uint64_t>(durationSec * 1e6);
 
   uint64_t count = 0, firstTs = 0, lastTs = 0;
-  auto nextTick = steady_clock::now();
+  steady_clock::time_point nextTick = steady_clock::now();
 
   while (!g_stop.load())
   {
@@ -210,7 +225,7 @@ int RunTUI(IMU& imu, BMP180& baro, const Sensors& initial,
            const char* outDir, double rateHz)
 {
   using namespace std::chrono;
-  const auto period =
+  const steady_clock::duration period =
       duration_cast<steady_clock::duration>(duration<double>(1.0 / rateHz));
 
   initscr();
@@ -224,7 +239,7 @@ int RunTUI(IMU& imu, BMP180& baro, const Sensors& initial,
   Sensors sel = initial;      // editable while idle
   std::FILE* csv = nullptr;   // open while recording
   unsigned long count = 0;
-  auto nextTick = steady_clock::now();
+  steady_clock::time_point nextTick = steady_clock::now();
   int rc = 0;
 
   while (true)
@@ -338,36 +353,34 @@ int main(int argc, char** argv)
   const char* magCal = nullptr;
   double rateHz = 100.0;
   double durationSec = 0.0;
-  bool tui = false;
+#ifdef USE_NCURSES
+  bool tui = true;   // the interactive TUI is the default; --no-tui disables it
+#else
+  bool tui = false;  // built without ncurses: command-line mode only
+#endif
 
   for (int i = 1; i < argc; ++i)
   {
     const char* a = argv[i];
-    auto value = [&](const char* name) -> const char* {
-      if (i + 1 >= argc)
-      {
-        std::fprintf(stderr, "error: %s requires a value\n", name);
-        std::exit(2);
-      }
-      return argv[++i];
-    };
 
     if (!std::strcmp(a, "-l") || !std::strcmp(a, "--label"))
-      label = value(a);
+      label = NextArg(i, argc, argv, a);
     else if (!std::strcmp(a, "-o") || !std::strcmp(a, "--out-dir"))
-      outDir = value(a);
+      outDir = NextArg(i, argc, argv, a);
     else if (!std::strcmp(a, "-s") || !std::strcmp(a, "--sensors"))
-      sensorSpec = value(a);
+      sensorSpec = NextArg(i, argc, argv, a);
     else if (!std::strcmp(a, "-d") || !std::strcmp(a, "--device"))
-      device = value(a);
+      device = NextArg(i, argc, argv, a);
     else if (!std::strcmp(a, "-r") || !std::strcmp(a, "--rate"))
-      rateHz = std::atof(value(a));
+      rateHz = std::atof(NextArg(i, argc, argv, a));
     else if (!std::strcmp(a, "-t") || !std::strcmp(a, "--duration"))
-      durationSec = std::atof(value(a));
+      durationSec = std::atof(NextArg(i, argc, argv, a));
     else if (!std::strcmp(a, "--mag-cal"))
-      magCal = value(a);
+      magCal = NextArg(i, argc, argv, a);
     else if (!std::strcmp(a, "--tui"))
       tui = true;
+    else if (!std::strcmp(a, "--no-tui"))
+      tui = false;
     else if (!std::strcmp(a, "-h") || !std::strcmp(a, "--help"))
     {
       Usage(argv[0]);
@@ -383,7 +396,7 @@ int main(int argc, char** argv)
 
   if (!tui && !label)
   {
-    std::fprintf(stderr, "error: --label is required (or use --tui)\n");
+    std::fprintf(stderr, "error: --label is required in --no-tui mode\n");
     Usage(argv[0]);
     return 2;
   }
