@@ -62,34 +62,61 @@ target_link_libraries(train PRIVATE -static
 )
 
 # The inference tool talks to the IMU (so it links the self-contained driver/)
-# and is always built with the ncurses TUI.  The toolchain ships only a *host*
-# ncurses, so point NCURSES_PREFIX at a target ncurses cross-built once (see the
-# README); the default matches the location used while developing this example.
-set(NCURSES_PREFIX "/meta/toolchains/ncurses-riscv64"
-    CACHE PATH "target (RISC-V) ncurses install prefix for the infer TUI")
+# and is always built with the ncurses TUI.  ncurses is not part of the cross
+# toolchain, so it is located in one of two ways:
+#
+#   1. Preferred for cross builds -- point NCURSES_PREFIX at a target (RISC-V)
+#      ncurses you cross-built once (see the "ncurses TUI" note in the README):
+#         cmake ... -DNCURSES_PREFIX=/path/to/ncurses-riscv64
+#   2. Otherwise we try to find a system/sysroot ncursesw automatically.
+#
+# If neither is available, `infer` is simply skipped (train still builds) with a
+# hint, instead of failing the whole configure on a hard-coded path.
+set(NCURSES_PREFIX "" CACHE PATH
+    "target ncurses install prefix for the infer TUI (see README)")
 
-add_executable(infer
-  infer/infer.cpp
-  driver/imu.cpp
-  driver/l3gd20h.cpp
-  driver/lsm303d.cpp
-  driver/bmp180.cpp
-  driver/i2c_bus.cpp
-  driver/mag_calibration.cpp
-)
+set(INFER_NCURSES_INCLUDE "")
+set(INFER_NCURSES_LIB "")
+if(NCURSES_PREFIX)
+  set(INFER_NCURSES_INCLUDE
+      ${NCURSES_PREFIX}/include ${NCURSES_PREFIX}/include/ncursesw)
+  set(INFER_NCURSES_LIB ${NCURSES_PREFIX}/lib/libncursesw.a)
+else()
+  find_path(NCURSESW_INCLUDE_DIR ncurses.h PATH_SUFFIXES ncursesw)
+  find_library(NCURSESW_LIBRARY NAMES ncursesw)
+  if(NCURSESW_INCLUDE_DIR AND NCURSESW_LIBRARY)
+    set(INFER_NCURSES_INCLUDE ${NCURSESW_INCLUDE_DIR})
+    set(INFER_NCURSES_LIB ${NCURSESW_LIBRARY})
+  endif()
+endif()
 
-target_include_directories(infer SYSTEM PRIVATE
-  ${MLPACK_INCLUDE_DIRS}
-  ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-  ${NCURSES_PREFIX}/include
-  ${NCURSES_PREFIX}/include/ncursesw
-)
+if(INFER_NCURSES_LIB)
+  add_executable(infer
+    infer/infer.cpp
+    driver/imu.cpp
+    driver/l3gd20h.cpp
+    driver/lsm303d.cpp
+    driver/bmp180.cpp
+    driver/i2c_bus.cpp
+    driver/mag_calibration.cpp
+  )
 
-target_link_libraries(infer PRIVATE -static
-  ${MLPACK_LIBRARIES}
-  ${TRAIN_OPENBLAS}
-  ${NCURSES_PREFIX}/lib/libncursesw.a
-  gfortran
-  pthread
-  m
-)
+  target_include_directories(infer SYSTEM PRIVATE
+    ${MLPACK_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${INFER_NCURSES_INCLUDE}
+  )
+
+  target_link_libraries(infer PRIVATE -static
+    ${MLPACK_LIBRARIES}
+    ${TRAIN_OPENBLAS}
+    ${INFER_NCURSES_LIB}
+    gfortran
+    pthread
+    m
+  )
+else()
+  message(STATUS
+    "infer: ncurses not found -- skipping (train still builds).  Set "
+    "-DNCURSES_PREFIX=/path/to/ncurses-riscv64 to enable it; see the README.")
+endif()
