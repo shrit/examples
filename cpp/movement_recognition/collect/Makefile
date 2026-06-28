@@ -8,12 +8,12 @@
 #   -flto                    cross-module size optimization
 #   -s                       strip symbols
 #
-# Optional interactive ncurses TUI: build with `make NCURSES=1` if the toolchain
-# provides ncurses (the Milk-V Duo's RISC-V toolchain does).  Without it, collect
-# is command-line only and links nothing extra.
+# The interactive ncurses TUI is built IN BY DEFAULT (it is collect's default
+# mode; pass --no-tui at runtime for plain command-line recording).  Build with
+# `make NCURSES=0` to drop ncurses entirely (command-line only, smallest binary).
 #
-# Host build:   make                 (CLI only)
-#               make NCURSES=1        (with the --tui front-end)
+# Host build:   make                 (TUI + command-line, needs ncurses dev)
+#               make NCURSES=0        (command-line only, no ncurses)
 # Cross-build:  make CXX=/path/to/riscv64-buildroot-linux-musl-g++ STATIC=-static
 # Clean:        make clean
 
@@ -36,13 +36,12 @@ STATIC ?=
 LDFLAGS += $(STATIC) -flto -s -Wl,--gc-sections -pthread
 LIBS +=
 
-# Enable the ncurses TUI when requested (make NCURSES=1).
+# The ncurses TUI is on by default (NCURSES=1); set NCURSES=0 to drop it.
 # For a host build the system ncurses is found automatically.  For a cross build
 # point at a target ncurses via NCURSES_CFLAGS / NCURSES_LIBS, e.g.
-#   make NCURSES=1 \
-#        NCURSES_CFLAGS="-isystem /path/to/ncurses-riscv64/include" \
-#        NCURSES_LIBS="-L/path/to/ncurses-riscv64/lib -lncurses"
-NCURSES ?=
+#   make NCURSES_CFLAGS="-isystem /path/to/ncurses-riscv64/include" \
+#        NCURSES_LIBS="-L/path/to/ncurses-riscv64/lib -lncursesw"
+NCURSES ?= 1
 NCURSES_CFLAGS ?=
 NCURSES_LIBS ?= -lncurses
 ifeq ($(NCURSES),1)

@@ -50,6 +50,27 @@ macro(search_openblas version)
     if (NOT MSVC)
       if (NOT EXISTS "${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}/libopenblas.a")
         set(ENV{COMMON_OPT} "${CMAKE_OPENBLAS_FLAGS}") # Pass our flags to OpenBLAS
+
+        # NN-on-device memory fit (riscv64).  OpenBLAS lazily allocates a per-GEMM
+        # scratch buffer (BUFFER_SIZE -- 32 MB on riscv64) sized for its default
+        # N-block (SGEMM_DEFAULT_R = 12288).  That single 32 MB allocation does
+        # not fit on a ~28 MB device, so the first f32 matrix-multiply -- e.g. the
+        # neural network's dense layers -- is OOM-killed at startup.  (Random
+        # forest and KNN avoid that big GEMM path, which is why only the NN
+        # failed.)  Our matrices are tiny, so shrink the N-block to 2048 and the
+        # buffer to 8 MB for the generic riscv64 target; there is no measurable
+        # speed cost.  See README.md / BINARY_SIZE.md for the full investigation.
+        if(OPENBLAS_TARGET STREQUAL "RISCV64_GENERIC")
+          execute_process(COMMAND sed -i
+              "/#ifdef RISCV64_GENERIC/,/#endif/{s/_DEFAULT_R 12288/_DEFAULT_R 2048/;s/_DEFAULT_R 8192/_DEFAULT_R 2048/;s/_DEFAULT_R 4096/_DEFAULT_R 2048/}"
+              "${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}/param.h")
+          execute_process(COMMAND sed -i
+              "s/( 32 << 20)/( 8 << 20)/"
+              "${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}/common_riscv64.h")
+          message(STATUS
+            "OpenBLAS(riscv64): shrank GEMM buffer 32MB->8MB and N-block "
+            "12288->2048 so the f32 neural net fits in ~28 MB RAM.")
+        endif()
         # USE_THREAD=0 / NUM_THREADS=1 / USE_OPENMP=0: build a single-threaded
         # OpenBLAS.  On a single-core, 64 MB target (Milk-V Duo) the threaded
         # build spawns worker threads that busy-wait (spin) at startup, which
