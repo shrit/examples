@@ -1,19 +1,27 @@
-# Cross-compilation build for the `train` binary.
+# Build for the movement-recognition example: one CMake project, four programs.
 #
-# Training runs on the device, so this reuses the repo's embedded cross-compile
-# machinery (CMake/, copied from embedded/embedded_cmake_template) to fetch
-# mlpack + its dependencies and build a static binary for the Milk-V Duo.
+#   imu_test  -- sensor check + magnetometer calibration (no mlpack)
+#   collect   -- record sensor data to CSV               (no mlpack)
+#   train     -- train a neural network from the CSVs    (mlpack)
+#   infer     -- live inference from the IMU             (mlpack)
 #
-# Milk-V Duo (SOPHGO CV1800B, RISC-V C906, 64 MB) with a Bootlin riscv64-lp64d
-# musl toolchain:
-#   cmake -DCMAKE_CROSSCOMPILE=ON -DARCH_NAME=C906 \
+# `imu_test` and `collect` only need the Linux I2C headers; they are compiled
+# exception-free and size-optimized into small static binaries.  `train` and
+# `infer` link mlpack, so this project fetches mlpack + its dependencies and
+# cross-compiles OpenBLAS via the CMake/ machinery (see ConfigureCrossCompile).
+#
+# Host build (your computer):
+#   cmake .. && make
+#
+# Cross-compile for the Milk-V Duo (SOPHGO CV1800B, RISC-V C906, 64 MB) with a
+# Bootlin riscv64-lp64d musl toolchain:
+#   cmake -DCMAKE_CROSSCOMPILING=ON -DARCH_NAME=C906 \
 #         -DCMAKE_TOOLCHAIN_FILE=../CMake/crosscompile-toolchain.cmake \
 #         -DTOOLCHAIN_PREFIX=/path/to/.../bin/riscv64-buildroot-linux-musl- \
 #         -DCMAKE_SYSROOT=/path/to/.../riscv64-buildroot-linux-musl/sysroot ..
 #   make
 #
-# For a native host build, prefer train/Makefile.  (collect and the driver's
-# imu_test build with their own Makefiles -- no mlpack, no CMake.)
+# Build a single program with, e.g., `make collect` or `make train`.
 
 cmake_minimum_required(VERSION 3.11)
 project(movement_recognition CXX)
@@ -41,82 +49,62 @@ fetch_mlpack(ON)
 # switch; saves ~50-80 KB once it is present.
 add_compile_definitions(MLPACK_DISABLE_STB)
 
+# Link statically for the device (so nothing needs to be installed on the Duo);
+# a host build links normally, which needs no static system libraries.
+if(CMAKE_CROSSCOMPILING)
+  set(LINK_STATIC -static)
+endif()
+
+# The GY-89 driver is self-contained: the I2C wrapper, the three chip drivers,
+# and the magnetometer calibration.  Every program that talks to the sensor
+# compiles these in directly.
+set(DRIVER_SOURCES
+  driver/imu.cpp
+  driver/l3gd20h.cpp
+  driver/lsm303d.cpp
+  driver/bmp180.cpp
+  driver/i2c_bus.cpp
+  driver/mag_calibration.cpp
+)
+
+# --- imu_test and collect: tiny, mlpack-free, exception-free ----------------
+# Built for size (no exceptions/RTTI, dead-section stripped) so they stay in the
+# 150-170 KB range on the device.  They do not depend on mlpack/Armadillo.
+add_executable(imu_test driver/imu_test.cpp ${DRIVER_SOURCES})
+add_executable(collect  collect/collect_main.cpp ${DRIVER_SOURCES})
+
+foreach(tool imu_test collect)
+  target_compile_options(${tool} PRIVATE
+    -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections)
+  target_link_libraries(${tool} PRIVATE ${LINK_STATIC}
+    -Wl,--gc-sections
+    pthread)   # std::this_thread::sleep_* pulls in pthread
+endforeach()
+
+# --- train and infer: link mlpack -------------------------------------------
+# When cross-compiling, link the cross-built OpenBLAS explicitly, plus its
+# gfortran/m runtime: Armadillo is fetched in "wrapper" mode, so MLPACK_LIBRARIES
+# can come out without BLAS, which the FFN / matrix paths need (dgemm_, ddot_,
+# ...).  On a host build MLPACK_LIBRARIES already carries the system BLAS.
+if(CMAKE_CROSSCOMPILING)
+  file(GLOB OPENBLAS_LIB "${CMAKE_BINARY_DIR}/deps/OpenBLAS-*/libopenblas.a")
+  set(MLPACK_EXTRA_LIBS ${OPENBLAS_LIB} gfortran m)
+endif()
+
 add_executable(train train/train.cpp)
-
-target_include_directories(train SYSTEM PRIVATE
-  ${MLPACK_INCLUDE_DIRS}
-  ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-)
-
-# Static link.  Link the cross-built OpenBLAS explicitly (+ its gfortran/pthread
-# /m runtime): when Armadillo is fetched in "wrapper" mode, MLPACK_LIBRARIES can
-# come out without BLAS, which the FFN / matrix paths need (dgemm_, ddot_, ...).
-file(GLOB TRAIN_OPENBLAS "${CMAKE_BINARY_DIR}/deps/OpenBLAS-*/libopenblas.a")
-
-target_link_libraries(train PRIVATE -static
+target_include_directories(train SYSTEM PRIVATE ${MLPACK_INCLUDE_DIRS})
+target_link_libraries(train PRIVATE ${LINK_STATIC}
   ${MLPACK_LIBRARIES}
-  ${TRAIN_OPENBLAS}
-  gfortran
+  ${MLPACK_EXTRA_LIBS}
   pthread
-  m
 )
 
-# The inference tool talks to the IMU (so it links the self-contained driver/)
-# and is always built with the ncurses TUI.  ncurses is not part of the cross
-# toolchain, so it is located in one of two ways:
-#
-#   1. Preferred for cross builds -- point NCURSES_PREFIX at a target (RISC-V)
-#      ncurses you cross-built once (see the "ncurses TUI" note in the README):
-#         cmake ... -DNCURSES_PREFIX=/path/to/ncurses-riscv64
-#   2. Otherwise we try to find a system/sysroot ncursesw automatically.
-#
-# If neither is available, `infer` is simply skipped (train still builds) with a
-# hint, instead of failing the whole configure on a hard-coded path.
-set(NCURSES_PREFIX "" CACHE PATH
-    "target ncurses install prefix for the infer TUI (see README)")
-
-set(INFER_NCURSES_INCLUDE "")
-set(INFER_NCURSES_LIB "")
-if(NCURSES_PREFIX)
-  set(INFER_NCURSES_INCLUDE
-      ${NCURSES_PREFIX}/include ${NCURSES_PREFIX}/include/ncursesw)
-  set(INFER_NCURSES_LIB ${NCURSES_PREFIX}/lib/libncursesw.a)
-else()
-  find_path(NCURSESW_INCLUDE_DIR ncurses.h PATH_SUFFIXES ncursesw)
-  find_library(NCURSESW_LIBRARY NAMES ncursesw)
-  if(NCURSESW_INCLUDE_DIR AND NCURSESW_LIBRARY)
-    set(INFER_NCURSES_INCLUDE ${NCURSESW_INCLUDE_DIR})
-    set(INFER_NCURSES_LIB ${NCURSESW_LIBRARY})
-  endif()
-endif()
-
-if(INFER_NCURSES_LIB)
-  add_executable(infer
-    infer/infer.cpp
-    driver/imu.cpp
-    driver/l3gd20h.cpp
-    driver/lsm303d.cpp
-    driver/bmp180.cpp
-    driver/i2c_bus.cpp
-    driver/mag_calibration.cpp
-  )
-
-  target_include_directories(infer SYSTEM PRIVATE
-    ${MLPACK_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${INFER_NCURSES_INCLUDE}
-  )
-
-  target_link_libraries(infer PRIVATE -static
-    ${MLPACK_LIBRARIES}
-    ${TRAIN_OPENBLAS}
-    ${INFER_NCURSES_LIB}
-    gfortran
-    pthread
-    m
-  )
-else()
-  message(STATUS
-    "infer: ncurses not found -- skipping (train still builds).  Set "
-    "-DNCURSES_PREFIX=/path/to/ncurses-riscv64 to enable it; see the README.")
-endif()
+# The inference tool talks to the IMU, so it links the driver alongside mlpack;
+# it prints predictions to stdout.
+add_executable(infer infer/infer.cpp ${DRIVER_SOURCES})
+target_include_directories(infer SYSTEM PRIVATE ${MLPACK_INCLUDE_DIRS})
+target_link_libraries(infer PRIVATE ${LINK_STATIC}
+  ${MLPACK_LIBRARIES}
+  ${MLPACK_EXTRA_LIBS}
+  pthread
+)

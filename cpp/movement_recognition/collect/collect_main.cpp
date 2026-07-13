@@ -14,9 +14,6 @@
  * Examples:
  *   collect --label walking --sensors all --duration 30
  *   collect --label stairs_up --sensors accel,gyro --out-dir data
- *   collect --tui --out-dir data            # interactive picker (if built in)
- *
- * The optional ncurses TUI is compiled in only with `make NCURSES=1`.
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -34,10 +31,6 @@
 #include <cstring>
 #include <ctime>
 #include <thread>
-
-#ifdef USE_NCURSES
-#include <ncurses.h>
-#endif
 
 #include "../driver/bmp180.hpp"
 #include "../driver/imu.hpp"
@@ -60,11 +53,6 @@ const char* NextArg(int& i, int argc, char** argv, const char* name)
   }
   return argv[++i];
 }
-
-const char* const kLabels[] = {"sitting", "walking", "walking_fast",
-                                "stairs_up", "stairs_down", "squat" };
-
-constexpr int kNumLabels = sizeof(kLabels) / sizeof(kLabels[0]);
 
 // Which sensors to record.  accel/gyro/mag come from the IMU; baro is the BMP180.
 struct Sensors
@@ -151,12 +139,8 @@ void Usage(const char* prog)
 {
   std::printf(
       "Record GY-89 sensor data to a CSV file (one file per recording, named\n"
-      "<label>_<date>.csv).  The interactive ncurses TUI runs by default;\n"
-      "use --no-tui for plain command-line recording.\n\n"
-      "Usage: %s [options]            (interactive TUI)\n"
-      "       %s --no-tui --label NAME [options]   (command line)\n"
-      "      --no-tui        plain command-line recording (needs --label)\n"
-      "      --tui           force the interactive TUI (the default)\n"
+      "<label>_<date>.csv).\n\n"
+      "Usage: %s --label NAME [options]\n"
       "  -l, --label NAME    label for this recording (used as the file name)\n"
       "  -o, --out-dir DIR   directory for the output file (default .)\n"
       "  -s, --sensors LIST  comma list of accel,gyro,mag,baro -- or all "
@@ -166,7 +150,7 @@ void Usage(const char* prog)
       "  -t, --duration SEC  seconds to record, 0 = until Ctrl-C (default 0)\n"
       "      --mag-cal FILE  apply a magnetometer calibration file\n"
       "  -h, --help          show this help\n",
-      prog, prog);
+      prog);
 }
 
 // Command-line recording loop: sample the selected sensors at `rateHz`, writing
@@ -216,132 +200,6 @@ int RunCommandLine(IMU& imu, BMP180& baro, const Sensors& sensors,
   return 0;
 }
 
-#ifdef USE_NCURSES
-
-// Interactive picker: choose a label and which sensors to record, start/stop
-// recording (each recording opens a new <out-dir>/<label>_<date>.csv), and watch
-// the live readings.  `initial` seeds the sensor selection (from --sensors).
-int RunTUI(IMU& imu, BMP180& baro, const Sensors& initial,
-           const char* outDir, double rateHz)
-{
-  using namespace std::chrono;
-  const steady_clock::duration period =
-      duration_cast<steady_clock::duration>(duration<double>(1.0 / rateHz));
-
-  initscr();
-  cbreak();
-  noecho();
-  keypad(stdscr, TRUE);
-  curs_set(0);
-  nodelay(stdscr, TRUE);
-
-  int selected = 0;
-  Sensors sel = initial;      // editable while idle
-  std::FILE* csv = nullptr;   // open while recording
-  unsigned long count = 0;
-  steady_clock::time_point nextTick = steady_clock::now();
-  int rc = 0;
-
-  while (true)
-  {
-    // Always read the IMU for the live display; read the (slow) barometer only
-    // when it is selected.
-    const uint64_t ts = UnixMicros();
-    ImuSample m;
-    float pressurePa = 0.f, tempC = 0.f;
-    if (!imu.Sample(m) || (sel.baro && !baro.Read(tempC, pressurePa)))
-    {
-      rc = 1;
-      break;
-    }
-    if (csv)
-    {
-      WriteRow(csv, sel, ts, m, pressurePa, tempC);
-      ++count;
-    }
-
-    bool quit = false;
-    switch (getch())
-    {
-      case 'q': case 'Q':
-        quit = true;
-        break;
-      case ' ': case 'r': case 'R':
-        if (csv)  // stop
-        {
-          std::fclose(csv);
-          csv = nullptr;
-        }
-        else if (sel.accel || sel.gyro || sel.mag || sel.baro)
-        {
-          // start a new dated file for the selected label + sensors
-          char path[512];
-          MakeFilename(path, sizeof(path), outDir, kLabels[selected]);
-          csv = std::fopen(path, "w");
-          if (csv) { WriteHeader(csv, sel); count = 0; }
-        }
-        break;
-      // Sensor toggles -- only while idle, since a file's columns are fixed once
-      // recording starts.
-      case 'a': case 'A': if (!csv) sel.accel = !sel.accel; break;
-      case 'g': case 'G': if (!csv) sel.gyro  = !sel.gyro;  break;
-      case 'm': case 'M': if (!csv) sel.mag   = !sel.mag;   break;
-      case 'b': case 'B': if (!csv) sel.baro  = !sel.baro;  break;
-      case KEY_UP: case 'k':
-        if (!csv && selected > 0) --selected;
-        break;
-      case KEY_DOWN: case 'j':
-        if (!csv && selected + 1 < kNumLabels) ++selected;
-        break;
-      default:
-        break;
-    }
-    if (quit || g_stop.load())
-      break;
-
-    erase();
-    mvprintw(0, 2, "GY-89 data collection");
-    mvprintw(1, 2, "keys: Up/Down label   a/g/m/b sensors   Space record   "
-             "q quit");
-    mvprintw(2, 2, "sensors: [%c] accel   [%c] gyro   [%c] mag   [%c] baro",
-             sel.accel ? 'x' : ' ', sel.gyro ? 'x' : ' ',
-             sel.mag ? 'x' : ' ', sel.baro ? 'x' : ' ');
-
-    mvprintw(4, 2, "label:");
-    for (int i = 0; i < kNumLabels; ++i)
-    {
-      if (i == selected) attron(A_REVERSE);
-      mvprintw(5 + i, 4, "%-14s", kLabels[i]);
-      if (i == selected) attroff(A_REVERSE);
-    }
-
-    const int base = 6 + kNumLabels;
-    if (csv)
-      mvprintw(base, 2, "[ RECORDING '%s' ]  %lu samples",
-               kLabels[selected], count);
-    else
-      mvprintw(base, 2, "[ idle ]  toggle sensors, then Space to start a file");
-    mvprintw(base + 2, 2, "accel(g)   % 7.3f % 7.3f % 7.3f", m.ax, m.ay, m.az);
-    mvprintw(base + 3, 2, "gyro(dps)  % 7.1f % 7.1f % 7.1f", m.gx, m.gy, m.gz);
-    mvprintw(base + 4, 2, "mag(gauss) % 7.3f % 7.3f % 7.3f", m.mx, m.my, m.mz);
-    if (sel.baro)
-      mvprintw(base + 5, 2, "baro       %8.2f hPa   %.1f C",
-               pressurePa / 100.0f, tempC);
-    refresh();
-
-    nextTick += period;
-    std::this_thread::sleep_until(nextTick);
-  }
-
-  if (csv)
-    std::fclose(csv);
-  endwin();
-  if (rc != 0)
-    std::fprintf(stderr, "error: I2C read failed during sampling.\n");
-  return rc;
-}
-#endif  // USE_NCURSES
-
 }  // namespace
 
 int main(int argc, char** argv)
@@ -353,11 +211,6 @@ int main(int argc, char** argv)
   const char* magCal = nullptr;
   double rateHz = 100.0;
   double durationSec = 0.0;
-#ifdef USE_NCURSES
-  bool tui = true;   // the interactive TUI is the default; --no-tui disables it
-#else
-  bool tui = false;  // built without ncurses: command-line mode only
-#endif
 
   for (int i = 1; i < argc; ++i)
   {
@@ -377,10 +230,6 @@ int main(int argc, char** argv)
       durationSec = std::atof(NextArg(i, argc, argv, a));
     else if (!std::strcmp(a, "--mag-cal"))
       magCal = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "--tui"))
-      tui = true;
-    else if (!std::strcmp(a, "--no-tui"))
-      tui = false;
     else if (!std::strcmp(a, "-h") || !std::strcmp(a, "--help"))
     {
       Usage(argv[0]);
@@ -394,9 +243,9 @@ int main(int argc, char** argv)
     }
   }
 
-  if (!tui && !label)
+  if (!label)
   {
-    std::fprintf(stderr, "error: --label is required in --no-tui mode\n");
+    std::fprintf(stderr, "error: --label is required\n");
     Usage(argv[0]);
     return 2;
   }
@@ -414,15 +263,6 @@ int main(int argc, char** argv)
     return 2;
   }
 
-#ifndef USE_NCURSES
-  if (tui)
-  {
-    std::fprintf(stderr, "error: this build has no ncurses TUI; rebuild with "
-                 "`make NCURSES=1`, or use --label for command-line mode.\n");
-    return 2;
-  }
-#endif
-
   I2CBus bus(device);
   if (!bus.IsOpen())
   {
@@ -431,10 +271,9 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  // The TUI lets the user toggle any sensor, so bring everything up for it;
-  // otherwise only what --sensors selected.
+  // Bring up only the sensors that --sensors selected.
   IMU imu(bus);
-  if (sensors.AnyMotion() || tui)
+  if (sensors.AnyMotion())
   {
     if (imu.Begin())
       std::printf("IMU detected (sensor identities OK).\n");
@@ -459,7 +298,7 @@ int main(int argc, char** argv)
   }
 
   BMP180 baro(bus);
-  if (sensors.baro || tui)
+  if (sensors.baro)
   {
     bool baroId = false;
     uint8_t baroChip = 0;
@@ -472,14 +311,7 @@ int main(int argc, char** argv)
 
   std::signal(SIGINT, HandleSigint);
 
-  if (tui)
-  {
-#ifdef USE_NCURSES
-    return RunTUI(imu, baro, sensors, outDir, rateHz);
-#endif
-  }
-
-  // Command-line mode: open one dated file named after the label.
+  // Open one dated file named after the label.
   char path[512];
   MakeFilename(path, sizeof(path), outDir, label);
   std::FILE* csv = std::fopen(path, "w");
