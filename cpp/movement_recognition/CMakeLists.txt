@@ -55,16 +55,16 @@ if(CMAKE_CROSSCOMPILING)
   set(LINK_STATIC -static)
 endif()
 
-# The GY-89 driver is self-contained: the I2C wrapper, the three chip drivers,
-# and the magnetometer calibration.  Every program that talks to the sensor
-# compiles these in directly.
+# The GY-89 driver is self-contained: the I2C wrapper and the three chip drivers.
+# The magnetometer calibration and the SensorBoard that composes everything into
+# one object are small enough to be header-only (see their .hpp files), so they
+# need no entry here.  Every program that talks to the sensor compiles these in.
 set(DRIVER_SOURCES
   driver/imu.cpp
   driver/l3gd20h.cpp
   driver/lsm303d.cpp
   driver/bmp180.cpp
   driver/i2c_bus.cpp
-  driver/mag_calibration.cpp
 )
 
 # --- imu_test and collect: tiny, mlpack-free, exception-free ----------------
