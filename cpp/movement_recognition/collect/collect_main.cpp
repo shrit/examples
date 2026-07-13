@@ -2,9 +2,9 @@
  * @file collect_main.cpp
  * @author Omar Shrit
  *
- * Small, Data collector app for sensor data from a GY-89 into a CSV
- * file.  It depends only on the drivers in ../driver.
- * Argument parsing is hand-rolled and all I/O is C stdio.
+ * Small data-collection app that records GY-89 sensor data to a CSV file.  It
+ * depends only on the drivers in ../driver; argument parsing is hand-rolled and
+ * all I/O is C stdio, so the binary stays tiny and exception-free.
  *
  * - choose which sensors to record (`--sensors accel,gyro,mag,baro` or `all`);
  * - timestamp every row with the Unix clock in microseconds;
@@ -30,11 +30,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sstream>
+#include <string>
 #include <thread>
 
-#include "../driver/bmp180.hpp"
-#include "../driver/imu.hpp"
-#include "../driver/mag_calibration.hpp"
+#include "../driver/sensor_board.hpp"
 
 namespace {
 
@@ -44,43 +44,43 @@ void HandleSigint(int) { g_stop = true; }
 
 // Return the next command-line value after argv[i], advancing i.  Exits with an
 // error if the option was given without a value.
-const char* NextArg(int& i, int argc, char** argv, const char* name)
+std::string NextArg(int& i, int argc, char** argv, const std::string& name)
 {
   if (i + 1 >= argc)
   {
-    std::fprintf(stderr, "error: %s requires a value\n", name);
+    std::fprintf(stderr, "error: %s requires a value\n", name.c_str());
     std::exit(2);
   }
   return argv[++i];
 }
 
-// Which sensors to record.  accel/gyro/mag come from the IMU; baro is the BMP180.
-struct Sensors
-{
-  bool accel = false, gyro = false, mag = false, baro = false;
-  bool AnyMotion() const { return accel || gyro || mag; }
-};
-
 // Parse "all" or a comma list like "accel,gyro,mag,baro".  Returns false if the
 // spec is empty or contains an unknown name.
-bool ParseSensors(const char* spec, Sensors& out)
+bool ParseSensors(const std::string& spec, Sensors& out)
 {
-  if (!std::strcmp(spec, "all"))
+  if (spec == "all")
   {
     out = { true, true, true, true };
     return true;
   }
-  char buf[128];
-  std::strncpy(buf, spec, sizeof(buf) - 1);
-  buf[sizeof(buf) - 1] = '\0';
-  for (char* tok = std::strtok(buf, ","); tok; tok = std::strtok(nullptr, ","))
+
+  std::string token;
+  std::stringstream ss(spec);
+
+  while (std::getline(ss, token, ','))
   {
-    if (!std::strcmp(tok, "accel")) out.accel = true;
-    else if (!std::strcmp(tok, "gyro")) out.gyro = true;
-    else if (!std::strcmp(tok, "mag")) out.mag = true;
-    else if (!std::strcmp(tok, "baro")) out.baro = true;
-    else return false;
+    if (token == "accel")
+      out.accel = true;
+    else if (token == "gyro")
+      out.gyro = true;
+    else if (token == "mag")
+      out.mag = true;
+    else if (token == "baro")
+      out.baro = true;
+    else
+      return false;
   }
+
   return out.accel || out.gyro || out.mag || out.baro;
 }
 
@@ -93,46 +93,46 @@ uint64_t UnixMicros()
 }
 
 //! Build "<dir>/<label>_<YYYYmmdd-HHMMSS>.csv" from the current date.
-void MakeFilename(char* out, size_t n, const char* dir, const char* label)
+std::string MakeFilename(const std::string& dir, const std::string& label)
 {
   const time_t now = std::time(nullptr);
   struct tm tmv;
   localtime_r(&now, &tmv);
   char stamp[32];
   std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmv);
-  std::snprintf(out, n, "%s/%s_%s.csv", dir, label, stamp);
+  return dir + "/" + label + "_" + stamp + ".csv";
 }
 
 void WriteHeader(std::FILE* f, const Sensors& s)
 {
   std::fprintf(f, "timestamp_unix_us");
-  if (s.accel) std::fprintf(f, ",ax,ay,az");
-  if (s.gyro)  std::fprintf(f, ",gx,gy,gz");
-  if (s.mag)   std::fprintf(f, ",mx,my,mz");
-  if (s.baro)  std::fprintf(f, ",pressure_pa,temp_c");
+
+  if (s.accel)
+    std::fprintf(f, ",ax,ay,az");
+  if (s.gyro)
+    std::fprintf(f, ",gx,gy,gz");
+  if (s.mag)
+    std::fprintf(f, ",mx,my,mz");
+  if (s.baro)
+    std::fprintf(f, ",pressure_pa,temp_c");
+
   std::fprintf(f, "\n");
 }
 
-void WriteRow(std::FILE* f, const Sensors& s, uint64_t ts,
-              const ImuSample& m, float pressurePa, float tempC)
+void WriteRow(std::FILE* f, const Sensors& s, uint64_t ts, const Reading& r)
 {
+  const ImuSample& m = r.motion;
   std::fprintf(f, "%llu", static_cast<unsigned long long>(ts));
-  if (s.accel) std::fprintf(f, ",%.6g,%.6g,%.6g", m.ax, m.ay, m.az);
-  if (s.gyro)  std::fprintf(f, ",%.6g,%.6g,%.6g", m.gx, m.gy, m.gz);
-  if (s.mag)   std::fprintf(f, ",%.6g,%.6g,%.6g", m.mx, m.my, m.mz);
-  if (s.baro)  std::fprintf(f, ",%.6g,%.6g", pressurePa, tempC);
-  std::fprintf(f, "\n");
-}
+  if (s.accel)
+    std::fprintf(f, ",%.6g,%.6g,%.6g", m.ax, m.ay, m.az);
+  if (s.gyro)
+    std::fprintf(f, ",%.6g,%.6g,%.6g", m.gx, m.gy, m.gz);
+  if (s.mag)
+    std::fprintf(f, ",%.6g,%.6g,%.6g", m.mx, m.my, m.mz);
+  if (s.baro)
+    std::fprintf(f, ",%.6g,%.6g", r.pressurePa, r.tempC);
 
-// Read one row's worth of the selected sensors.  Returns false on I2C error.
-bool ReadSelected(IMU& imu, BMP180& baro, const Sensors& s,
-                  ImuSample& m, float& pressurePa, float& tempC)
-{
-  if (s.AnyMotion() && !imu.Sample(m))
-    return false;
-  if (s.baro && !baro.Read(tempC, pressurePa))
-    return false;
-  return true;
+  std::fprintf(f, "\n");
 }
 
 void Usage(const char* prog)
@@ -153,10 +153,10 @@ void Usage(const char* prog)
       prog);
 }
 
-// Command-line recording loop: sample the selected sensors at `rateHz`, writing
-// rows until the duration elapses or Ctrl-C.
-int RunCommandLine(IMU& imu, BMP180& baro, const Sensors& sensors,
-                   std::FILE* csv, double rateHz, double durationSec)
+// Sample the board at `rateHz`, writing one CSV row per sample until the
+// duration elapses or Ctrl-C is pressed.
+int Record(const SensorBoard& board, std::FILE* csv,
+           double rateHz, double durationSec)
 {
   using namespace std::chrono;
   const steady_clock::duration period =
@@ -164,31 +164,41 @@ int RunCommandLine(IMU& imu, BMP180& baro, const Sensors& sensors,
   const uint64_t durationMicros =
       static_cast<uint64_t>(durationSec * 1e6);
 
+  // Report progress to the terminal every this many samples.
+  constexpr uint64_t kProgressEvery = 50;
+
   uint64_t count = 0, firstTs = 0, lastTs = 0;
   steady_clock::time_point nextTick = steady_clock::now();
 
   while (!g_stop.load())
   {
     const uint64_t ts = UnixMicros();
-    ImuSample m;
-    float pressurePa = 0.f, tempC = 0.f;
-    if (!ReadSelected(imu, baro, sensors, m, pressurePa, tempC))
+
+    Reading reading;
+
+    if (!board.Read(reading))
     {
       std::fprintf(stderr, "\nerror: I2C read failed during sampling: %s\n",
                    std::strerror(errno));
       return 1;
     }
-    WriteRow(csv, sensors, ts, m, pressurePa, tempC);
 
-    if (count == 0) firstTs = ts;
+    WriteRow(csv, board.Selected(), ts, reading);
+
+    if (count == 0)
+      firstTs = ts;
+
     lastTs = ts;
-    if (++count % 50 == 0)
+
+    if (++count % kProgressEvery == 0)
     {
       std::printf("\r  %llu samples...", static_cast<unsigned long long>(count));
       std::fflush(stdout);
     }
+
     if (durationMicros > 0 && ts - firstTs >= durationMicros)
       break;
+
     nextTick += period;
     std::this_thread::sleep_until(nextTick);
   }
@@ -204,51 +214,52 @@ int RunCommandLine(IMU& imu, BMP180& baro, const Sensors& sensors,
 
 int main(int argc, char** argv)
 {
-  const char* device = "/dev/i2c-0";
-  const char* label = nullptr;
-  const char* outDir = ".";
-  const char* sensorSpec = "all";
-  const char* magCal = nullptr;
+  std::string device = "/dev/i2c-0";
+  std::string label;
+  std::string outDir = ".";
+  std::string sensorSpec = "all";
+  std::string magCal;
   double rateHz = 100.0;
   double durationSec = 0.0;
 
   for (int i = 1; i < argc; ++i)
   {
-    const char* a = argv[i];
+    const std::string a = argv[i];
 
-    if (!std::strcmp(a, "-l") || !std::strcmp(a, "--label"))
+    if (a == "-l" || a == "--label")
       label = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "-o") || !std::strcmp(a, "--out-dir"))
+    else if (a == "-o" || a == "--out-dir")
       outDir = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "-s") || !std::strcmp(a, "--sensors"))
+    else if (a == "-s" || a == "--sensors")
       sensorSpec = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "-d") || !std::strcmp(a, "--device"))
+    else if (a == "-d" || a == "--device")
       device = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "-r") || !std::strcmp(a, "--rate"))
-      rateHz = std::atof(NextArg(i, argc, argv, a));
-    else if (!std::strcmp(a, "-t") || !std::strcmp(a, "--duration"))
-      durationSec = std::atof(NextArg(i, argc, argv, a));
-    else if (!std::strcmp(a, "--mag-cal"))
+    else if (a == "-r" || a == "--rate")
+      rateHz = std::atof(NextArg(i, argc, argv, a).c_str());
+    else if (a == "-t" || a == "--duration")
+      durationSec = std::atof(NextArg(i, argc, argv, a).c_str());
+    else if (a == "--mag-cal")
       magCal = NextArg(i, argc, argv, a);
-    else if (!std::strcmp(a, "-h") || !std::strcmp(a, "--help"))
+    else if (a == "-h" || a == "--help")
     {
       Usage(argv[0]);
       return 0;
     }
     else
     {
-      std::fprintf(stderr, "error: unknown argument '%s'\n", a);
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       Usage(argv[0]);
       return 2;
     }
   }
 
-  if (!label)
+  if (label.empty())
   {
     std::fprintf(stderr, "error: --label is required\n");
     Usage(argv[0]);
     return 2;
   }
+
   if (rateHz <= 0.0)
   {
     std::fprintf(stderr, "error: --rate must be > 0\n");
@@ -256,6 +267,7 @@ int main(int argc, char** argv)
   }
 
   Sensors sensors;
+
   if (!ParseSensors(sensorSpec, sensors))
   {
     std::fprintf(stderr, "error: --sensors must be 'all' or a comma list of "
@@ -263,70 +275,35 @@ int main(int argc, char** argv)
     return 2;
   }
 
-  I2CBus bus(device);
-  if (!bus.IsOpen())
-  {
-    std::fprintf(stderr, "error: cannot open I2C device '%s': %s\n",
-                 device, std::strerror(errno));
+  // The whole GY-89 board behind one object: open the bus and bring up only the
+  // sensors that --sensors selected.
+  SensorBoard board(device, sensors);
+
+  if (!board.Begin(magCal))
     return 1;
-  }
-
-  // Bring up only the sensors that --sensors selected.
-  IMU imu(bus);
-  if (sensors.AnyMotion())
-  {
-    if (imu.Begin())
-      std::printf("IMU detected (sensor identities OK).\n");
-    else
-      std::printf("Proceeding despite the IMU warning(s) above.\n");
-
-    if (magCal)
-    {
-      MagCalibration cal;
-      if (cal.Load(magCal))
-      {
-        imu.SetMagCalibration(cal);
-        std::printf("Applied magnetometer calibration from %s.\n", magCal);
-      }
-      else
-      {
-        std::fprintf(stderr,
-                     "warning: could not read mag calibration '%s'; using raw.\n",
-                     magCal);
-      }
-    }
-  }
-
-  BMP180 baro(bus);
-  if (sensors.baro)
-  {
-    bool baroId = false;
-    uint8_t baroChip = 0;
-    if (baro.Begin(baroId, baroChip) && baroId)
-      std::printf("BMP180 barometer detected.\n");
-    else
-      std::fprintf(stderr, "warning: BMP180 not detected (chip id 0x%02X); "
-                   "pressure/temperature columns may be invalid.\n", baroChip);
-  }
 
   std::signal(SIGINT, HandleSigint);
 
   // Open one dated file named after the label.
-  char path[512];
-  MakeFilename(path, sizeof(path), outDir, label);
-  std::FILE* csv = std::fopen(path, "w");
+  const std::string path = MakeFilename(outDir, label);
+
+  std::FILE* csv = std::fopen(path.c_str(), "w");
+
   if (!csv)
   {
     std::fprintf(stderr, "error: cannot open '%s' for writing: %s\n",
-                 path, std::strerror(errno));
+                 path.c_str(), std::strerror(errno));
     return 1;
   }
+
   WriteHeader(csv, sensors);
   std::printf("Recording '%s' (%s) at %.0f Hz to %s. Press Ctrl-C to stop.\n",
-              label, sensorSpec, rateHz, path);
+              label.c_str(), sensorSpec.c_str(), rateHz, path.c_str());
 
-  const int rc = RunCommandLine(imu, baro, sensors, csv, rateHz, durationSec);
+  const int rc = Record(board, csv, rateHz, durationSec);
+
   std::fflush(csv);
   std::fclose(csv);
+
   return rc;
 }
