@@ -12,8 +12,8 @@
  *   (there is no label column).
  *
  * Examples:
- *   collect --label walking --sensors all --duration 30
- *   collect --label stairs_up --sensors accel,gyro --out-dir data
+ *   collect walking                       # all sensors, cwd, until Ctrl-C
+ *   collect stairs_up accel,gyro data      # accel+gyro into data/
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -27,7 +27,6 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -40,18 +39,6 @@ namespace {
 std::atomic<bool> g_stop{false};
 
 void HandleSigint(int) { g_stop = true; }
-
-// Return the next command-line value after argv[i], advancing i.  Exits with an
-// error if the option was given without a value.
-std::string NextArg(int& i, int argc, char** argv, const std::string& name)
-{
-  if (i + 1 >= argc)
-  {
-    std::fprintf(stderr, "error: %s requires a value\n", name.c_str());
-    std::exit(2);
-  }
-  return argv[++i];
-}
 
 //! Microseconds since the Unix epoch (the device's real-time clock).
 uint64_t UnixMicros()
@@ -102,24 +89,6 @@ void WriteRow(std::FILE* f, const Sensors& s, uint64_t ts, const Reading& r)
     std::fprintf(f, ",%.6g,%.6g", r.pressurePa, r.tempC);
 
   std::fprintf(f, "\n");
-}
-
-void Usage(const char* prog)
-{
-  std::printf(
-      "Record GY-89 sensor data to a CSV file (one file per recording, named\n"
-      "<label>_<date>.csv).\n\n"
-      "Usage: %s --label NAME [options]\n"
-      "  -l, --label NAME    label for this recording (used as the file name)\n"
-      "  -o, --out-dir DIR   directory for the output file (default .)\n"
-      "  -s, --sensors LIST  comma list of accel,gyro,mag,baro -- or all "
-      "(default all)\n"
-      "  -d, --device PATH   I2C device (default /dev/i2c-0)\n"
-      "  -r, --rate HZ       sampling rate (default 100)\n"
-      "  -t, --duration SEC  seconds to record, 0 = until Ctrl-C (default 0)\n"
-      "      --mag-cal FILE  apply a magnetometer calibration file\n"
-      "  -h, --help          show this help\n",
-      prog);
 }
 
 // Sample the board at `rateHz`, writing one CSV row per sample until the
@@ -183,55 +152,28 @@ int Record(const SensorBoard& board, std::FILE* csv,
 
 int main(int argc, char** argv)
 {
-  std::string device = "/dev/i2c-0";
-  std::string label;
-  std::string outDir = ".";
-  std::string sensorSpec = "all";
-  std::string magCal;
-  double rateHz = 100.0;
-  double durationSec = 0.0;
-
-  for (int i = 1; i < argc; ++i)
+  // Arguments are positional: the label is required (it becomes the CSV file
+  // name); the rest are optional and fall back to sensible defaults if omitted.
+  // For device pass "/dev/i2c-0" and for mag-cal pass "-" to skip it.
+  if (argc < 2)
   {
-    const std::string a = argv[i];
-
-    if (a == "-l" || a == "--label")
-      label = NextArg(i, argc, argv, a);
-    else if (a == "-o" || a == "--out-dir")
-      outDir = NextArg(i, argc, argv, a);
-    else if (a == "-s" || a == "--sensors")
-      sensorSpec = NextArg(i, argc, argv, a);
-    else if (a == "-d" || a == "--device")
-      device = NextArg(i, argc, argv, a);
-    else if (a == "-r" || a == "--rate")
-      rateHz = std::atof(NextArg(i, argc, argv, a).c_str());
-    else if (a == "-t" || a == "--duration")
-      durationSec = std::atof(NextArg(i, argc, argv, a).c_str());
-    else if (a == "--mag-cal")
-      magCal = NextArg(i, argc, argv, a);
-    else if (a == "-h" || a == "--help")
-    {
-      Usage(argv[0]);
-      return 0;
-    }
-    else
-    {
-      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
-      Usage(argv[0]);
-      return 2;
-    }
+    std::fprintf(stderr, "Usage: %s <label> [sensors] [out-dir] [device]"
+                 " [rate-hz] [duration-sec] [mag-cal]\n", argv[0]);
+    return 1;
   }
 
-  if (label.empty())
-  {
-    std::fprintf(stderr, "error: --label is required\n");
-    Usage(argv[0]);
-    return 2;
-  }
+  const std::string label      = argv[1];
+  const std::string sensorSpec = argc > 2 ? argv[2] : "all";
+  const std::string outDir     = argc > 3 ? argv[3] : ".";
+  const std::string device     = argc > 4 ? argv[4] : "/dev/i2c-0";
+  const double rateHz          = argc > 5 ? std::stod(argv[5]) : 100.0;
+  const double durationSec     = argc > 6 ? std::stod(argv[6]) : 0.0;
+  const std::string magCal     = (argc > 7 && std::string(argv[7]) != "-")
+                                     ? argv[7] : "";
 
   if (rateHz <= 0.0)
   {
-    std::fprintf(stderr, "error: --rate must be > 0\n");
+    std::fprintf(stderr, "error: rate-hz must be > 0\n");
     return 2;
   }
 
@@ -239,13 +181,13 @@ int main(int argc, char** argv)
 
   if (!ParseSensors(sensorSpec, sensors))
   {
-    std::fprintf(stderr, "error: --sensors must be 'all' or a comma list of "
+    std::fprintf(stderr, "error: sensors must be 'all' or a comma list of "
                  "accel,gyro,mag,baro\n");
     return 2;
   }
 
   // The whole GY-89 board behind one object: open the bus and bring up only the
-  // sensors that --sensors selected.
+  // selected sensors.
   SensorBoard board(device, sensors);
 
   if (!board.Begin(magCal))
