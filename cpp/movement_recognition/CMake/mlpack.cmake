@@ -57,10 +57,13 @@
 # Configuration options:
 #
 #   MLPACK_DISABLE_OPENMP: if set, parallelism via OpenMP will be disabled.
-#   MLPACK_USE_SYSTEM_STB: if set, STB will be searched for on the system, 
+#   MLPACK_DISABLE_STB: if set, mlpack image (STB) support is compiled out.
+#   MLPACK_DISABLE_DR_LIBS: if set, mlpack audio (dr_libs) support is compiled out.
+#   MLPACK_DISABLE_HTTPLIB: if set, mlpack httplib support is compiled out.
+#   MLPACK_USE_SYSTEM_STB: if set, STB will be searched for on the system,
 #       instead of using the version bundled with mlpack.
 #
-# After all libraries are downloaded and set up, the macro will set the 
+# After all libraries are downloaded and set up, the macro will set the
 # following variables:
 #
 # MLPACK_INCLUDE_DIRS: list of all include directories for mlpack and its
@@ -204,6 +207,19 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(MLPACK_DISABLE_OPENMP OFF)
+
+option(MLPACK_DISABLE_STB     "Disable mlpack image (STB) support"     OFF)
+option(MLPACK_DISABLE_DR_LIBS "Disable mlpack audio (dr_libs) support" OFF)
+option(MLPACK_DISABLE_HTTPLIB "Disable mlpack httplib support"         OFF)
+
+macro(apply_mlpack_compile_options)
+  foreach(_mlpack_opt MLPACK_DISABLE_STB MLPACK_DISABLE_DR_LIBS
+                      MLPACK_DISABLE_HTTPLIB)
+    if (${_mlpack_opt})
+      add_compile_definitions(${_mlpack_opt})
+    endif ()
+  endforeach()
+endmacro()
 
 ##===================================================
 ##  MLPACK AUTODOWNLOADER DEPENDENCIES FUNCTIONS
@@ -660,12 +676,14 @@ macro(fetch_mlpack COMPILE_OPENBLAS)
     set(MLPACK_INCLUDE_DIRS ${MLPACK_INCLUDE_DIRS} ${MLPACK_INCLUDE_DIR})
   endif()
 
-  find_openmp() 
+  find_openmp()
+
+  apply_mlpack_compile_options()
 
 endmacro()
 
 ##===================================================
-##  MLPACK MAIN FUNCTIONS CALL. 
+##  MLPACK MAIN FUNCTIONS CALL.
 ##===================================================
 
 macro(find_mlpack)
@@ -717,6 +735,8 @@ macro(find_mlpack)
   else()
     message(FATAL_ERROR "mlpack not found!")
   endif()
+
+  apply_mlpack_compile_options()
 
   mark_as_advanced(MLPACK_INCLUDE_DIR)
   mark_as_advanced(MLPACK_INCLUDE_DIRS)

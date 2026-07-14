@@ -15,7 +15,7 @@
 #
 # Cross-compile for the Milk-V Duo (SOPHGO CV1800B, RISC-V C906, 64 MB) with a
 # Bootlin riscv64-lp64d musl toolchain:
-#   cmake -DCMAKE_CROSSCOMPILING=ON -DARCH_NAME=C906 \
+#   cmake -DCMAKE_CROSSCOMPILING=ON -DARCH_NAME=RV64GCV \
 #         -DCMAKE_TOOLCHAIN_FILE=../CMake/crosscompile-toolchain.cmake \
 #         -DTOOLCHAIN_PREFIX=/path/to/.../bin/riscv64-buildroot-linux-musl- \
 #         -DCMAKE_SYSROOT=/path/to/.../riscv64-buildroot-linux-musl/sysroot ..
@@ -38,16 +38,16 @@ include(CMake/mlpack.cmake)
 # fetch_mlpack() (which runs find_package(OpenMP)).
 set(MLPACK_DISABLE_OPENMP ON)
 
+# This example only loads CSVs, never images, so compile out mlpack's image
+# (STB) support to shrink the binary (~50-80 KB).  MLPACK_DISABLE_STB is one of
+# the footprint options mlpack.cmake exposes; setting it here (or on the command
+# line, -DMLPACK_DISABLE_STB=ON) makes fetch_mlpack() apply the compile
+# definition for us.  Harmless no-op on an mlpack that predates the switch.
+set(MLPACK_DISABLE_STB ON)
+
 # Download + configure mlpack and its deps (armadillo, ensmallen, cereal,
 # OpenBLAS, built single-threaded -- see ConfigureCrossCompile.cmake).
 fetch_mlpack(ON)
-
-# This example only loads CSVs, never images, so compile out mlpack's image
-# (STB) support to shrink the binary.  This is mlpack's `-DDISABLE_STB=ON` build
-# option; for a header-only consumer like us it is the MLPACK_DISABLE_STB define
-# (see mlpack's config.hpp).  Harmless no-op on an mlpack that predates the
-# switch; saves ~50-80 KB once it is present.
-add_compile_definitions(MLPACK_DISABLE_STB)
 
 # Link statically for the device (so nothing needs to be installed on the Duo);
 # a host build links normally, which needs no static system libraries.
