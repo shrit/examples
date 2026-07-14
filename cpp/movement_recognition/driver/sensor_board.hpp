@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <string>
 
 #include "bmp180.hpp"
@@ -42,7 +43,45 @@ struct Sensors
   {
     return accel || gyro || mag;
   }
+
+  //! Number of scalar channels the selection produces, in the canonical order
+  //! accel(3), gyro(3), mag(3), baro(2) -- the order used for CSV columns and
+  //! feature vectors alike.
+  size_t Channels() const
+  {
+    return 3 * accel + 3 * gyro + 3 * mag + 2 * baro;
+  }
 };
+
+//! Parse "all" or a comma list like "accel,gyro,mag,baro" into a Sensors.
+//! Returns false if the spec is empty or contains an unknown name.
+inline bool ParseSensors(const std::string& spec, Sensors& out)
+{
+  if (spec == "all")
+  {
+    out = { true, true, true, true };
+    return true;
+  }
+
+  std::string token;
+  std::stringstream ss(spec);
+
+  while (std::getline(ss, token, ','))
+  {
+    if (token == "accel")
+      out.accel = true;
+    else if (token == "gyro")
+      out.gyro = true;
+    else if (token == "mag")
+      out.mag = true;
+    else if (token == "baro")
+      out.baro = true;
+    else
+      return false;
+  }
+
+  return out.accel || out.gyro || out.mag || out.baro;
+}
 
 //! One reading of the whole board: the 9-DOF motion sample plus the barometer.
 //! Only the fields for the selected sensors are meaningful.

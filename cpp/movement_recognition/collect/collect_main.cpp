@@ -30,7 +30,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <sstream>
 #include <string>
 #include <thread>
 
@@ -52,36 +51,6 @@ std::string NextArg(int& i, int argc, char** argv, const std::string& name)
     std::exit(2);
   }
   return argv[++i];
-}
-
-// Parse "all" or a comma list like "accel,gyro,mag,baro".  Returns false if the
-// spec is empty or contains an unknown name.
-bool ParseSensors(const std::string& spec, Sensors& out)
-{
-  if (spec == "all")
-  {
-    out = { true, true, true, true };
-    return true;
-  }
-
-  std::string token;
-  std::stringstream ss(spec);
-
-  while (std::getline(ss, token, ','))
-  {
-    if (token == "accel")
-      out.accel = true;
-    else if (token == "gyro")
-      out.gyro = true;
-    else if (token == "mag")
-      out.mag = true;
-    else if (token == "baro")
-      out.baro = true;
-    else
-      return false;
-  }
-
-  return out.accel || out.gyro || out.mag || out.baro;
 }
 
 //! Microseconds since the Unix epoch (the device's real-time clock).
