@@ -7,6 +7,56 @@
 # by, e.g., setting ARCH_NAME (which will set OPENBLAS_TARGET in
 # `flags-config.cmake`).
 
+# Apply a list of patch files to an OpenBLAS source tree before it is built.
+# `srcDir` is the unpacked OpenBLAS directory; `patches` is a ;-list of patch
+# files (each `patch -p1`-compatible).  Applying is idempotent: a patch that is
+# already applied (detected via a reverse dry-run) is skipped, so re-running
+# CMake against an existing build tree is safe.  A patch that neither applies
+# cleanly nor is already applied is a hard error -- unlike an in-place `sed`, it
+# never silently does nothing when the upstream source has changed.
+function(apply_openblas_patches srcDir patches)
+  find_program(PATCH_EXECUTABLE patch)
+  if(NOT PATCH_EXECUTABLE)
+    message(FATAL_ERROR "The 'patch' tool is required to apply OPENBLAS_PATCHES "
+                        "but was not found on PATH.")
+  endif()
+
+  foreach(patchFile IN LISTS patches)
+    if(NOT IS_ABSOLUTE "${patchFile}")
+      set(patchFile "${CMAKE_CURRENT_LIST_DIR}/${patchFile}")
+    endif()
+    if(NOT EXISTS "${patchFile}")
+      message(FATAL_ERROR "OpenBLAS patch not found: ${patchFile}")
+    endif()
+
+    get_filename_component(patchName "${patchFile}" NAME)
+
+    # Already applied?  `patch -R --dry-run` succeeds only if the reverse patch
+    # would apply, i.e. the forward patch is already in place.
+    execute_process(
+        COMMAND ${PATCH_EXECUTABLE} -p1 -R --dry-run --force
+                --input=${patchFile}
+        WORKING_DIRECTORY ${srcDir}
+        RESULT_VARIABLE alreadyApplied
+        OUTPUT_QUIET ERROR_QUIET)
+    if(alreadyApplied EQUAL 0)
+      message(STATUS "OpenBLAS patch already applied, skipping: ${patchName}")
+      continue()
+    endif()
+
+    execute_process(
+        COMMAND ${PATCH_EXECUTABLE} -p1 --forward --input=${patchFile}
+        WORKING_DIRECTORY ${srcDir}
+        RESULT_VARIABLE patchResult
+        OUTPUT_VARIABLE patchOutput ERROR_VARIABLE patchOutput)
+    if(NOT patchResult EQUAL 0)
+      message(FATAL_ERROR
+          "Failed to apply OpenBLAS patch ${patchName}:\n${patchOutput}")
+    endif()
+    message(STATUS "Applied OpenBLAS patch: ${patchName}")
+  endforeach()
+endfunction()
+
 if (CMAKE_CROSSCOMPILING)
   include(CMake/crosscompile-arch-config.cmake)
   if (NOT CMAKE_SYSROOT AND (NOT TOOLCHAIN_PREFIX))
@@ -57,20 +107,19 @@ macro(search_openblas version)
         # not fit on a ~28 MB device, so the first f32 matrix-multiply -- e.g. the
         # neural network's dense layers -- is OOM-killed at startup.  (Random
         # forest and KNN avoid that big GEMM path, which is why only the NN
-        # failed.)  Our matrices are tiny, so shrink the N-block to 2048 and the
-        # buffer to 8 MB for the generic riscv64 target; there is no measurable
-        # speed cost.  See README.md / BINARY_SIZE.md for the full investigation.
-        if(OPENBLAS_TARGET STREQUAL "RISCV64_GENERIC")
-          execute_process(COMMAND sed -i
-              "/#ifdef RISCV64_GENERIC/,/#endif/{s/_DEFAULT_R 12288/_DEFAULT_R 2048/;s/_DEFAULT_R 8192/_DEFAULT_R 2048/;s/_DEFAULT_R 4096/_DEFAULT_R 2048/}"
-              "${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}/param.h")
-          execute_process(COMMAND sed -i
-              "s/( 32 << 20)/( 8 << 20)/"
-              "${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}/common_riscv64.h")
-          message(STATUS
-            "OpenBLAS(riscv64): shrank GEMM buffer 32MB->8MB and N-block "
-            "12288->2048 so the f32 neural net fits in ~28 MB RAM.")
+        # failed.)  The fix is a patch that shrinks the N-block to 2048 and the
+        # buffer to 8 MB; see CMake/patches/openblas-riscv64-low-memory.patch and
+        # README.md / BINARY_SIZE.md for the full investigation.
+        #
+        # For the generic riscv64 target we apply that patch by default; a caller
+        # can override or extend the list with -DOPENBLAS_PATCHES="a.patch;b.patch"
+        # (absolute paths, or relative to this CMake/ directory).
+        if(NOT DEFINED OPENBLAS_PATCHES AND OPENBLAS_TARGET STREQUAL "RISCV64_GENERIC")
+          set(OPENBLAS_PATCHES
+              "${CMAKE_CURRENT_LIST_DIR}/patches/openblas-riscv64-low-memory.patch")
         endif()
+        apply_openblas_patches("${CMAKE_BINARY_DIR}/deps/OpenBLAS-${version}"
+                               "${OPENBLAS_PATCHES}")
         # USE_THREAD=0 / NUM_THREADS=1 / USE_OPENMP=0: build a single-threaded
         # OpenBLAS.  On a single-core, 64 MB target (Milk-V Duo) the threaded
         # build spawns worker threads that busy-wait (spin) at startup, which
