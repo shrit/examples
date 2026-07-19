@@ -2,11 +2,10 @@
  * @file train/train.cpp
  * @author Omar Shrit
  *
- * Train a movement-recognition model, on the device, from the CSV files written
- * by the collect tool. It loads each * <label>_<date>.csv (the label is the file
- * name), cuts it into windows, runs an FFT per channel (one arma::fft call per
- * window) to get features, and trains a small f32 neural network.  No shared
- * "common" library -- everything is here.
+ * Train a movement-recognition neural network, on the device, from the CSV
+ * files written by the collect tool.  Each <label>_<date>.csv is loaded, cut
+ * into fixed-length windows, turned into FFT power-spectrum features, and used
+ * to train a small f32 feed-forward network.
  *
  *   train DIR 64 model         # data dir, window 64, output prefix "model"
  *
@@ -22,16 +21,13 @@
 #include <string>
 #include <vector>
 
-// Enable mlpack's neural-network serialization so we can save/load the trained
-// network with data::Save/data::Load (see the mnist_simple_f32 example).
 #define MLPACK_ENABLE_ANN_SERIALIZATION
 
 #include <mlpack.hpp>
 
 using namespace mlpack;
 
-// Register mlpack's layers for serialization, using f32 (arma::fmat) to match
-// the network below.
+// This is required to allow serialization of f32 data type matrices.
 CEREAL_REGISTER_MLPACK_LAYERS(arma::fmat);
 
 namespace fs = std::filesystem;
@@ -40,9 +36,7 @@ constexpr size_t kHidden = 64;
 
 namespace {
 
-// Label = file name without the trailing "_<date>" (the date has no underscore,
-// so the label is everything before the last '_'): stairs_up_20260619-...csv ->
-// "stairs_up".
+// The label is the file name without the trailing "_<date>".
 std::string LabelOf(const fs::path& p)
 {
   const std::string stem = p.stem().string();
@@ -54,17 +48,11 @@ std::string LabelOf(const fs::path& p)
   return stem.substr(0, u);
 }
 
-// Step 1 of feature building: load one recording from disk.
-//
-// Loads <label>_<date>.csv into `raw` with the sensor channels as rows and the
-// time samples as columns (mlpack loads text column-major and transposes by
-// default, so each CSV column becomes a row).  The first row -- the Unix
-// timestamp -- is dropped, leaving only sensor channels.  Returns false (and
-// prints why) when the file is missing, malformed, or shorter than one window.
 bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 {
+  // mlpack loads text column-major, so each CSV column becomes a row.
   data::TextOptions opts;
-  opts.HasHeaders() = true;  // skip the "timestamp_unix_us,ax,ay,..." header row
+  opts.HasHeaders() = true;
 
   std::cerr << "  load " << path.filename().string() << " ... ";
 
@@ -89,36 +77,129 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
     return false;
   }
 
-  // mlpack is column-major, so right now the sensor channels are the rows.
-  raw.shed_row(0);  // drop the timestamp row; the remaining rows are channels
+  // Drop the timestamp row; the remaining rows are the sensor channels.
+  raw.shed_row(0);
 
   return true;
 }
 
-// Step 2 of feature building: FFT pre-processing.
+// ===========================================================================
+// The feature pipeline, end to end
+// ===========================================================================
 //
-// Cut one recording (`raw`, channels x samples) into non-overlapping windows of
-// `window` samples.  For each window we run a single arma::fft over all channels
-// at once, keep the one-sided magnitude spectrum (window / 2 + 1 bins per
-// channel), stack the channels into one feature column, and tag it with
-// `classIdx`.  The columns/labels are appended to `cols`/`labels`.
-void ExtractWindows(const arma::fmat& raw, size_t window, size_t classIdx,
-                    std::vector<arma::fvec>& cols,
+// This is the journey from a raw recording on disk to the feature matrix the
+// network trains on.  The example below uses accel only (3 channels: ax, ay,
+// az) with window = 64 and step = 32 (50% overlap) to keep the numbers small;
+// the code itself works for any channel count and window length.
+//
+//
+// STAGE A -- the raw recording, as `collect` wrote it and `LoadRecording`
+//            hands it back (after dropping the timestamp row).
+//            shape = (channels x samples): rows are channels, columns are the
+//            consecutive samples over the whole recording.
+//
+//                 sample0  sample1  sample2  ...            sampleN-1
+//         ax  →  [  ax0      ax1      ax2    ...              axN-1  ]  row 0
+//         ay  →  [  ay0      ay1      ay2    ...              ayN-1  ]  row 1
+//         az  →  [  az0      az1      az2    ...              azN-1  ]  row 2
+//
+//
+// STAGE B -- ExtractWindows slides a window of `window` samples along the
+//            columns, advancing by `step` each time.  With step < window the
+//            windows OVERLAP, so one recording yields many training windows:
+//
+//         |<-------- window=64 -------->|
+//         [============ w0 =============]                         (start s=0)
+//                        |<-------- window ------->|
+//                        [======= w1 ==============]              (start s=32)
+//                                        [======= w2 ==... ]      (start s=64)
+//         └─ step=32 ─┘
+//
+//            Each window w_i is the sub-matrix raw.cols(s, s+window-1),
+//            shape (channels x window) = (3 x 64).  Every window becomes one
+//            feature column via WindowToFeatures (STAGE C).
+//
+//
+// STAGE C -- WindowToFeatures turns one (channels x window) window into a
+//            single feature column.  arma::fft transforms each COLUMN
+//            independently, so the trick is to put each channel in a column:
+//
+//   C1. the window                     C2. transpose: win.t()
+//       (channels x window)                (window x channels), channel = column
+//                                                  ax     ay     az
+//          s0  s1 ... s63             t0   [  ax0    ay0    az0  ]
+//    ax  [ ax0 ax1... ax63 ]          t1   [  ax1    ay1    az1  ]
+//    ay  [ ay0 ay1... ay63 ]   ──►    ...  [  ...    ...    ...  ]
+//    az  [ az0 az1... az63 ]          t63  [  ax63   ay63   az63 ]
+//
+//   C3. arma::fft runs DOWN each column      C4. one-sided half + power:
+//       (one 1-D FFT per channel, batched         square(abs(rows(0,numBins-1)))
+//        in a single call, no cross-mixing)        numBins = 64/2+1 = 33
+//           FFT(ax) FFT(ay) FFT(az)                   pow(ax) pow(ay) pow(az)
+//     bin0  [ AX0    AY0    AZ0  ]              bin0  [  .       .       .  ]
+//     bin1  [ AX1    AY1    AZ1  ]      ──►      ...   (33 rows kept)
+//     ...   [ ...    ...    ...  ]              bin32 [  .       .       .  ]
+//     bin63 [ AX63   AY63   AZ63 ]
+//
+//   C5. vectorise() flattens the power matrix column by column, then the raw
+//       per-channel time-domain stats (mean, stddev, median) are appended.
+//       The FFT bins capture periodicity (walking cadence); the stats capture
+//       posture and intensity (the mean encodes tilt for a static pose).
+//
+//       [ ax bin0..bin32 | ay bin0..bin32 | az bin0..bin32 | mean | std | median ]
+//         └── 33 ───────┘ └── 33 ───────┘ └── 33 ───────┘ └ 3 ─┘└3 ─┘└─ 3 ──┘
+//         └──────── FFT power: channels*(window/2+1) = 99 ─────┘└ stats: 3*channels=9┘
+//
+//            feature length = channels*(window/2+1) + 3*channels = 99 + 9 = 108.
+//
+//
+// STAGE D -- main() stacks every window's feature column into the matrix X
+//            (one column per window) with its class label in the row y, then
+//            standardizes, splits, and trains the network on it.
+//
+//                   w0    w1    w2   ...  wM-1
+//          feat0  [  .     .     .   ...    .  ]
+//          feat1  [  .     .     .   ...    .  ]   X: (feat x numWindows)
+//          ...    [ ...   ...   ...  ...   ... ]      = (108 x M)
+//        feat107  [  .     .     .   ...    .  ]
+//              y  (  c0    c1    c2   ...  cM-1 )   class index per window
+//
+// ===========================================================================
+
+// Applying Fast Fourier Transform to extract frequency domain, to allow to
+// capture the periodicity. In addition to this we are adding time domain
+// information using statistical methods (mean, stddev, median) to capture the
+// intensity of the movements.
+arma::fvec WindowToFeatures(const arma::fmat& win)
+{
+  const size_t numBins = win.n_cols / 2 + 1;
+
+  const arma::cx_fmat spectrum = arma::fft(win.t());
+  const arma::fmat power = arma::square(arma::abs(spectrum.rows(0, numBins - 1)));
+
+  return arma::join_cols(arma::vectorise(power),
+                         arma::mean(win, 1),
+                         arma::stddev(win, 0, 1),
+                         arma::median(win, 1));
+}
+
+// Cut `raw` (channels x samples) into overlapping windows and turn each into one
+// feature column, appending the columns and their class to `cols`/`labels`.
+// Consecutive windows start `step` samples apart, so with step < window they
+// overlap.  Overlap is a cheap way to get more training windows out of the same
+// recording (a 50% overlap roughly doubles them), which measurably improves
+// accuracy; it also matches how `infer` slides its window at run time.  No
+// window taper is applied -- for these short, low-frequency movement windows a
+// rectangular window classifies better than a Hamming-tapered one.
+void ExtractWindows(const arma::fmat& raw, size_t window, size_t step,
+                    size_t classIdx, std::vector<arma::fvec>& cols,
                     std::vector<size_t>& labels)
 {
   size_t numWindows = 0;
 
-  for (size_t s = 0; s + window <= raw.n_cols; s += window)
+  for (size_t s = 0; s + window <= raw.n_cols; s += step)
   {
-    // raw.cols(s, s + window - 1) is (channels x window).  Transpose it so each
-    // channel becomes a column, run the FFT down each column, then keep the
-    // lower (one-sided) half of the magnitude spectrum.
-    const arma::mat windowSamples =
-        arma::conv_to<arma::mat>::from(raw.cols(s, s + window - 1).t());
-    const arma::cx_mat spectrum = arma::fft(windowSamples);
-    const arma::mat magnitude = arma::abs(spectrum.rows(0, window / 2));
-
-    cols.push_back(arma::conv_to<arma::fvec>::from(arma::vectorise(magnitude)));
+    cols.push_back(WindowToFeatures(raw.cols(s, s + window - 1)));
     labels.push_back(classIdx);
     ++numWindows;
   }
@@ -136,57 +217,32 @@ double Accuracy(const arma::Row<size_t>& pred, const arma::Row<size_t>& truth)
   return (double) arma::accu(pred == truth) / truth.n_elem;
 }
 
-// --- the classifier: a small f32 neural network --------------------------
-//
-// TrainNN takes the training split (trainData / trainLabels) and the held-out
-// test split (testData / testLabels).  trainData / testData are feature matrices
-// with one FFT-feature column per window; trainLabels / testLabels are the
-// matching class indices.  `patience` is the early-stopping patience (below).
-
+// Train the network on the training split, report accuracy on the held-out test
+// split, and save the network to `out`.bin.  `patience` is the early-stopping
+// patience.
 void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
              const arma::fmat& testData, const arma::Row<size_t>& testLabels,
              size_t numClasses, size_t patience, const std::string& out)
 {
-  // A small feed-forward network, all in f32 to stay light on the device:
-  //   Linear(kHidden) -> ReLU -> Linear(numClasses) -> LogSoftMax
-  // LogSoftMax paired with NegativeLogLikelihood is the standard classification
-  // head (same shape as the mnist_simple_f32 example).
   FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat> net;
   net.Add<Linear<arma::fmat>>(kHidden);
   net.Add<ReLU<arma::fmat>>();
   net.Add<Linear<arma::fmat>>(numClasses);
   net.Add<LogSoftMax<arma::fmat>>();
 
-  // mlpack expects the responses as a 1 x N row of class indices.
   const arma::fmat responses = arma::conv_to<arma::fmat>::from(trainLabels);
-  // The held-out split, used by early stopping below as a validation set.
   const arma::fmat testResponses = arma::conv_to<arma::fmat>::from(testLabels);
 
-  // Adam optimizer (same arguments as the mnist_simple_f32 example).  The max
-  // iterations is left at 0 (no fixed limit): how long we train is decided by the
-  // early-stopping callback below, not by a fixed epoch count.
   ens::Adam optimizer(
       1e-2,    // step size (learning rate)
-      32,      // batch size: points used per optimizer step
+      32,      // batch size
       0.9,     // exp. decay for the 1st moment estimate
       0.999,   // exp. decay for the 2nd moment estimate
       1e-8,    // epsilon for numerical stability
-      0,       // max iterations: 0 = no limit; the early-stop callback decides
-      1e-8,    // tolerance: stop if the loss barely moves
-      true);   // shuffle the data between epochs
+      0,       // max iterations: 0 = no limit
+      1e-8,    // tolerance
+      true);   // shuffle between epochs
 
-  // Early stopping on the *validation* loss (the held-out split).  The callback
-  // is evaluated each epoch on testData and returns the validation loss;
-  // EarlyStopAtMinLoss stops once that loss has not improved for `patience`
-  // epochs past its lowest value.  Watching the validation -- not the training --
-  // loss is the whole point: the training loss keeps creeping down as the net
-  // memorises the data, so a training-loss early stop would run for thousands of
-  // epochs without ever triggering.
-  //
-  // We also remember the weights at the validation minimum (bestParams) and
-  // restore them afterwards, so we save the best-generalising model rather than
-  // the slightly over-fit weights from the extra `patience` epochs.  PrintLoss
-  // and ProgressBar just let the user watch training.
   double bestValLoss = std::numeric_limits<double>::infinity();
   arma::fmat bestParams;
   ens::EarlyStopAtMinLossType<arma::fmat> earlyStop(
@@ -210,8 +266,6 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
   if (!bestParams.is_empty())
     net.Parameters() = bestParams;
 
-  // Test-set accuracy: predict log-probabilities, take the arg-max class per
-  // column (one column == one window).
   arma::fmat scores;
   net.Predict(testData, scores);
 
@@ -223,9 +277,6 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
   std::cout << "neural net test accuracy: " << Accuracy(pred, testLabels)
             << "\n";
 
-  // Save the whole network with mlpack's serialization: architecture, weights,
-  // and input size all go into one file, so `infer` loads it with a single
-  // data::Load (same as the mnist_simple_f32 example).
   data::Save(out + ".bin", "model", net, false);
 }
 
@@ -238,15 +289,24 @@ int main(int argc, char** argv)
   if (argc < 2)
   {
     std::cerr << "Usage: " << argv[0]
-              << " <data-dir> [window] [out-prefix] [patience] [test-split]\n";
+              << " <data-dir> [window] [out-prefix] [patience] [test-split]"
+                 " [step]\n";
     return 1;
   }
 
   const std::string dataDir = argv[1];
-  const size_t window       = argc > 2 ? std::stoul(argv[2]) : 64;
+  // Given that these movement can be executed in 2 ~ 3 seconds, we have
+  // decided that the window is the best with 256 sensor data point, given that
+  // we are sampling at 100 HZ from the sensor. The user can adjust this if the
+  // movements are slower or faster.
+  const size_t window       = argc > 2 ? std::stoul(argv[2]) : 256;
   const std::string out     = argc > 3 ? argv[3] : "model";
   const size_t patience     = argc > 4 ? std::stoul(argv[4]) : 10;
   const double testSplit    = argc > 5 ? std::stod(argv[5]) : 0.2;
+  // Window step (samples between consecutive windows).  Default is a 50%
+  // overlap (window / 2); pass `window` for non-overlapping windows.
+  const size_t step         = argc > 6 ? std::stoul(argv[6])
+                                       : std::max<size_t>(1, window / 2);
 
   if (!fs::is_directory(dataDir))
   {
@@ -264,15 +324,14 @@ int main(int argc, char** argv)
   std::sort(files.begin(), files.end());
 
   std::cerr << "data dir '" << dataDir << "': " << files.size()
-            << " .csv file(s), window=" << window << "\n";
+            << " .csv file(s), window=" << window << ", step=" << step << "\n";
   if (files.empty())
   {
     std::cerr << "error: no .csv files in '" << dataDir << "'\n";
     return 1;
   }
 
-  // Map each label (the file name) to a class index, then turn every file into
-  // feature columns: load it (LoadRecording) and FFT-window it (ExtractWindows).
+  // Map each label to a class index, then turn every file into feature columns.
   std::map<std::string, size_t> classOf;
   std::vector<std::string> classNames;
   std::vector<arma::fvec> cols;
@@ -294,11 +353,10 @@ int main(int argc, char** argv)
 
     arma::fmat raw;
     if (LoadRecording(path, window, raw))
-      ExtractWindows(raw, window, classIdx, cols, labels);
+      ExtractWindows(raw, window, step, classIdx, cols, labels);
   }
 
-  // Every file must yield the same feature length (same sensors + window);
-  // mixing sensor sets would make the columns un-stackable.
+  // Every file must yield the same feature length (same sensors + window).
   const size_t feat = cols.empty() ? 0 : cols[0].n_elem;
   for (size_t i = 0; i < cols.size(); ++i)
   {
@@ -338,23 +396,39 @@ int main(int argc, char** argv)
   std::cout << X.n_cols << " windows, " << X.n_rows << " features, "
             << classNames.size() << " classes.\n";
 
-  // Split into a training set and a held-out test set.  trainData / testData are
-  // the feature matrices, trainLabels / testLabels the matching class indices.
-  // mlpack's data::Split shuffles and splits in one call (testSplit = fraction
-  // held out for testing).
   arma::fmat trainData, testData;
   arma::Row<size_t> trainLabels, testLabels;
   data::Split(X, y, trainData, testData, trainLabels, testLabels, testSplit);
   std::cerr << "split: " << trainData.n_cols << " train, " << testData.n_cols
             << " test\n";
 
+  // Since we have features from time domain and frequency domain, it is
+  // better to standardize all of features to have similar scale.
+  // @rcurtin, the following two lines are not required once we merge the
+  // templetize scalar methods PR.
+  const arma::mat trainDouble = arma::conv_to<arma::mat>::from(trainData);
+  const arma::mat testDouble = arma::conv_to<arma::mat>::from(testData);
+
+  data::StandardScaler scaler;
+  scaler.Fit(trainDouble);
+
+  arma::mat trainScaled, testScaled;
+  scaler.Transform(trainDouble, trainScaled);
+  scaler.Transform(testDouble, testScaled);
+  trainData = arma::conv_to<arma::fmat>::from(trainScaled);
+  testData = arma::conv_to<arma::fmat>::from(testScaled);
+
+  // Saved as *_scaler.bin: data::Save picks the format from the file extension,
+  // so it must end in a recognized one (.bin here).
+  data::Save(out + "_scaler.bin", "scaler", scaler, false);
+
   TrainNN(trainData, trainLabels, testData, testLabels, classNames.size(),
           patience, out);
 
-  // Sidecar: model type, window size, and class names, so the inference tool can
-  // load the model and reproduce the exact features.
+  // Sidecar with the model type, window size, window step, and class names, so
+  // infer can reproduce the exact features and label the predictions.
   std::ofstream meta(out + ".labels");
-  meta << "model=nn\nwindow=" << window << "\n";
+  meta << "model=nn\nwindow=" << window << "\nstep=" << step << "\n";
 
   meta << "classes=";
   for (size_t i = 0; i < classNames.size(); ++i)
@@ -363,6 +437,7 @@ int main(int argc, char** argv)
   }
   meta << "\n";
 
-  std::cout << "saved " << out << ".bin (+ " << out << ".labels)\n";
+  std::cout << "saved " << out << ".bin (+ " << out << ".labels, " << out
+            << "_scaler.bin)\n";
   return 0;
 }
