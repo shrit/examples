@@ -87,9 +87,9 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 // The feature pipeline, end to end
 // ===========================================================================
 //
-// This is the journey from a raw recording on disk to the feature matrix the
+// A set of steps from a raw recording on disk to the feature matrix the
 // network trains on.  The example below uses accel only (3 channels: ax, ay,
-// az) with window = 64 and step = 32 (50% overlap) to keep the numbers small;
+// az) with window = 256 and step = 128 (50% overlap), the training defaults;
 // the code itself works for any channel count and window length.
 //
 //
@@ -108,15 +108,15 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 //            columns, advancing by `step` each time.  With step < window the
 //            windows OVERLAP, so one recording yields many training windows:
 //
-//         |<-------- window=64 -------->|
+//         |<-------- window=256 ------->|
 //         [============ w0 =============]                         (start s=0)
 //                        |<-------- window ------->|
-//                        [======= w1 ==============]              (start s=32)
-//                                        [======= w2 ==... ]      (start s=64)
-//         └─ step=32 ─┘
+//                        [======= w1 ==============]              (start s=128)
+//                                        [======= w2 ==... ]      (start s=256)
+//         └ step=128 ┘
 //
 //            Each window w_i is the sub-matrix raw.cols(s, s+window-1),
-//            shape (channels x window) = (3 x 64).  Every window becomes one
+//            shape (channels x window) = (3 x 256).  Every window becomes one
 //            feature column via WindowToFeatures (STAGE C).
 //
 //
@@ -127,30 +127,30 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 //   C1. the window                     C2. transpose: win.t()
 //       (channels x window)                (window x channels), channel = column
 //                                                  ax     ay     az
-//          s0  s1 ... s63             t0   [  ax0    ay0    az0  ]
-//    ax  [ ax0 ax1... ax63 ]          t1   [  ax1    ay1    az1  ]
-//    ay  [ ay0 ay1... ay63 ]   ──►    ...  [  ...    ...    ...  ]
-//    az  [ az0 az1... az63 ]          t63  [  ax63   ay63   az63 ]
+//          s0  s1 ... s255            t0   [  ax0    ay0    az0  ]
+//    ax  [ ax0 ax1... ax255]          t1   [  ax1    ay1    az1  ]
+//    ay  [ ay0 ay1... ay255]   ──►    ...  [  ...    ...    ...  ]
+//    az  [ az0 az1... az255]          t255 [  ax255  ay255  az255]
 //
 //   C3. arma::fft runs DOWN each column      C4. one-sided half + power:
 //       (one 1-D FFT per channel, batched         square(abs(rows(0,numBins-1)))
-//        in a single call, no cross-mixing)        numBins = 64/2+1 = 33
+//        in a single call, no cross-mixing)        numBins = 256/2+1 = 129
 //           FFT(ax) FFT(ay) FFT(az)                   pow(ax) pow(ay) pow(az)
-//     bin0  [ AX0    AY0    AZ0  ]              bin0  [  .       .       .  ]
-//     bin1  [ AX1    AY1    AZ1  ]      ──►      ...   (33 rows kept)
-//     ...   [ ...    ...    ...  ]              bin32 [  .       .       .  ]
-//     bin63 [ AX63   AY63   AZ63 ]
+//     bin0  [ AX0    AY0    AZ0  ]              bin0   [  .       .       .  ]
+//     bin1  [ AX1    AY1    AZ1  ]      ──►      ...   (129 rows kept)
+//     ...   [ ...    ...    ...  ]              bin128 [  .       .       .  ]
+//     bin255[ AX255  AY255  AZ255]
 //
 //   C5. vectorise() flattens the power matrix column by column, then the raw
 //       per-channel time-domain stats (mean, stddev, median) are appended.
 //       The FFT bins capture periodicity (walking cadence); the stats capture
 //       posture and intensity (the mean encodes tilt for a static pose).
 //
-//       [ ax bin0..bin32 | ay bin0..bin32 | az bin0..bin32 | mean | std | median ]
-//         └── 33 ───────┘ └── 33 ───────┘ └── 33 ───────┘ └ 3 ─┘└3 ─┘└─ 3 ──┘
-//         └──────── FFT power: channels*(window/2+1) = 99 ─────┘└ stats: 3*channels=9┘
+//       [ ax bin0..bin128 | ay bin0..bin128 | az bin0..bin128 | mean | std | median ]
+//         └── 129 ──────┘ └── 129 ──────┘ └── 129 ──────┘ └ 3 ─┘└3 ─┘└─ 3 ──┘
+//         └──────── FFT power: channels*(window/2+1) = 387 ────┘└ stats: 3*channels=9┘
 //
-//            feature length = channels*(window/2+1) + 3*channels = 99 + 9 = 108.
+//            feature length = channels*(window/2+1) + 3*channels = 387 + 9 = 396.
 //
 //
 // STAGE D -- main() stacks every window's feature column into the matrix X
@@ -160,8 +160,8 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 //                   w0    w1    w2   ...  wM-1
 //          feat0  [  .     .     .   ...    .  ]
 //          feat1  [  .     .     .   ...    .  ]   X: (feat x numWindows)
-//          ...    [ ...   ...   ...  ...   ... ]      = (108 x M)
-//        feat107  [  .     .     .   ...    .  ]
+//          ...    [ ...   ...   ...  ...   ... ]      = (396 x M)
+//        feat395  [  .     .     .   ...    .  ]
 //              y  (  c0    c1    c2   ...  cM-1 )   class index per window
 //
 // ===========================================================================
@@ -423,12 +423,16 @@ int main(int argc, char** argv)
   data::Save(out + "_scaler.bin", "scaler", scaler, false);
 
   TrainNN(trainData, trainLabels, testData, testLabels, classNames.size(),
-          patience, out);
+            patience, out);
 
-  // Sidecar with the model type, window size, window step, and class names, so
-  // infer can reproduce the exact features and label the predictions.
+  // Write the model metadata to prefix.labels: a small "key=value" text file
+  // that infer reads to reproduce the exact features and label the predictions.
+  // It holds three keys, for example:
+  //     window=256                      (samples per window / FFT length)
+  //     step=128                        (samples between consecutive windows)
+  //     classes=sitting,walking,squat   (class names, in class-index order)
   std::ofstream meta(out + ".labels");
-  meta << "model=nn\nwindow=" << window << "\nstep=" << step << "\n";
+  meta << "window=" << window << "\nstep=" << step << "\n";
 
   meta << "classes=";
   for (size_t i = 0; i < classNames.size(); ++i)
