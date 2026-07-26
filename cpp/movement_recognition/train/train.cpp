@@ -290,7 +290,9 @@ int main(int argc, char** argv)
   {
     std::cerr << "Usage: " << argv[0]
               << " <data-dir> [window] [out-prefix] [patience] [test-split]"
-                 " [step]\n";
+                 " [step]\n"
+                 "  out-prefix may include a directory, e.g. models/act "
+                 "(default: models/model)\n";
     return 1;
   }
 
@@ -300,7 +302,11 @@ int main(int argc, char** argv)
   // we are sampling at 100 HZ from the sensor. The user can adjust this if the
   // movements are slower or faster.
   const size_t window       = argc > 2 ? std::stoul(argv[2]) : 256;
-  const std::string out     = argc > 3 ? argv[3] : "model";
+  // Output prefix for the model files.  It may include a directory (e.g.
+  // "models/act" writes models/act.bin, models/act_scaler.bin, models/act.labels)
+  // -- the directory is created below.  The default keeps every trained model
+  // together under a "models/" directory.
+  const std::string out     = argc > 3 ? argv[3] : "models/model";
   const size_t patience     = argc > 4 ? std::stoul(argv[4]) : 10;
   const double testSplit    = argc > 5 ? std::stod(argv[5]) : 0.2;
   // Window step (samples between consecutive windows).  Default is a 50%
@@ -312,6 +318,21 @@ int main(int argc, char** argv)
   {
     std::cerr << "error: '" << dataDir << "' is not a directory\n";
     return 1;
+  }
+
+  // Create the output directory the prefix points into (if any), so all three
+  // model files land together (e.g. "models/act" -> the "models" directory).
+  const fs::path outDir = fs::path(out).parent_path();
+  if (!outDir.empty())
+  {
+    std::error_code ec;
+    fs::create_directories(outDir, ec);
+    if (ec)
+    {
+      std::cerr << "error: cannot create output directory '" << outDir.string()
+                << "': " << ec.message() << "\n";
+      return 1;
+    }
   }
 
   // Collect the CSV files in the data directory.
