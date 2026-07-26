@@ -1,10 +1,10 @@
 /**
- * @file collect_main.cpp
+ * @file collect.cpp
  * @author Omar Shrit
  *
  * Small data-collection app that records GY-89 sensor data to a CSV file.  It
- * depends only on the drivers in ../driver; argument parsing is hand-rolled and
- * all I/O is C stdio, so the binary stays tiny and exception-free.
+ * depends only on the drivers in ../driver and argument parsing is hand-rolled,
+ * so the binary stays tiny.
  *
  * - choose which sensors to record (`--sensors accel,gyro,mag,baro` or `all`);
  * - timestamp every row with the Unix clock in microseconds;
@@ -26,9 +26,11 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <string>
 #include <thread>
 
@@ -59,41 +61,43 @@ std::string MakeFilename(const std::string& dir, const std::string& label)
   return dir + "/" + label + "_" + stamp + ".csv";
 }
 
-void WriteHeader(std::FILE* f, const Sensors& s)
+void WriteHeader(std::ostream& f, const Sensors& s)
 {
-  std::fprintf(f, "timestamp_unix_us");
+  f << "timestamp_unix_us";
 
   if (s.accel)
-    std::fprintf(f, ",ax,ay,az");
+    f << ",ax,ay,az";
   if (s.gyro)
-    std::fprintf(f, ",gx,gy,gz");
+    f << ",gx,gy,gz";
   if (s.mag)
-    std::fprintf(f, ",mx,my,mz");
+    f << ",mx,my,mz";
   if (s.baro)
-    std::fprintf(f, ",pressure_pa,temp_c");
+    f << ",pressure_pa,temp_c";
 
-  std::fprintf(f, "\n");
+  f << "\n";
 }
 
-void WriteRow(std::FILE* f, const Sensors& s, uint64_t ts, const Reading& r)
+void WriteRow(std::ostream& f, const Sensors& s, uint64_t ts, const Reading& r)
 {
+  // Six significant digits per value, matching the sensors' precision (the
+  // stream keeps this setting between calls, so set it once at the start).
   const ImuSample& m = r.motion;
-  std::fprintf(f, "%llu", static_cast<unsigned long long>(ts));
+  f << ts;
   if (s.accel)
-    std::fprintf(f, ",%.6g,%.6g,%.6g", m.ax, m.ay, m.az);
+    f << "," << m.ax << "," << m.ay << "," << m.az;
   if (s.gyro)
-    std::fprintf(f, ",%.6g,%.6g,%.6g", m.gx, m.gy, m.gz);
+    f << "," << m.gx << "," << m.gy << "," << m.gz;
   if (s.mag)
-    std::fprintf(f, ",%.6g,%.6g,%.6g", m.mx, m.my, m.mz);
+    f << "," << m.mx << "," << m.my << "," << m.mz;
   if (s.baro)
-    std::fprintf(f, ",%.6g,%.6g", r.pressurePa, r.tempC);
+    f << "," << r.pressurePa << "," << r.tempC;
 
-  std::fprintf(f, "\n");
+  f << "\n";
 }
 
 // Sample the board at `rateHz`, writing one CSV row per sample until the
 // duration elapses or Ctrl-C is pressed.
-int Record(const SensorBoard& board, std::FILE* csv,
+int Record(const SensorBoard& board, std::ostream& csv,
            double rateHz, double durationSec)
 {
   using namespace std::chrono;
@@ -116,8 +120,8 @@ int Record(const SensorBoard& board, std::FILE* csv,
 
     if (!board.Read(reading))
     {
-      std::fprintf(stderr, "\nerror: I2C read failed during sampling: %s\n",
-                   std::strerror(errno));
+      std::cerr << "\nerror: I2C read failed during sampling: "
+                << std::strerror(errno) << "\n";
       return 1;
     }
 
@@ -129,10 +133,7 @@ int Record(const SensorBoard& board, std::FILE* csv,
     lastTs = ts;
 
     if (++count % kProgressEvery == 0)
-    {
-      std::printf("\r  %llu samples...", static_cast<unsigned long long>(count));
-      std::fflush(stdout);
-    }
+      std::cout << "\r  " << count << " samples..." << std::flush;
 
     if (durationMicros > 0 && ts - firstTs >= durationMicros)
       break;
@@ -143,8 +144,9 @@ int Record(const SensorBoard& board, std::FILE* csv,
 
   const double elapsed = (count > 1) ? (lastTs - firstTs) / 1e6 : 0.0;
   const double effHz = (elapsed > 0.0) ? (count - 1) / elapsed : 0.0;
-  std::printf("\rWrote %llu samples in %.2f s (effective %.1f Hz).\n",
-              static_cast<unsigned long long>(count), elapsed, effHz);
+  std::cout << "\rWrote " << count << " samples in "
+            << std::fixed << std::setprecision(2) << elapsed << " s (effective "
+            << std::setprecision(1) << effHz << " Hz).\n";
   return 0;
 }
 
@@ -157,8 +159,8 @@ int main(int argc, char** argv)
   // For device pass "/dev/i2c-0" and for mag-cal pass "-" to skip it.
   if (argc < 2)
   {
-    std::fprintf(stderr, "Usage: %s <label> [sensors] [out-dir] [device]"
-                 " [rate-hz] [duration-sec] [mag-cal]\n", argv[0]);
+    std::cerr << "Usage: " << argv[0] << " <label> [sensors] [out-dir] [device]"
+                 " [rate-hz] [duration-sec] [mag-cal]\n";
     return 1;
   }
 
@@ -173,7 +175,7 @@ int main(int argc, char** argv)
 
   if (rateHz <= 0.0)
   {
-    std::fprintf(stderr, "error: rate-hz must be > 0\n");
+    std::cerr << "error: rate-hz must be > 0\n";
     return 2;
   }
 
@@ -181,8 +183,8 @@ int main(int argc, char** argv)
 
   if (!ParseSensors(sensorSpec, sensors))
   {
-    std::fprintf(stderr, "error: sensors must be 'all' or a comma list of "
-                 "accel,gyro,mag,baro\n");
+    std::cerr << "error: sensors must be 'all' or a comma list of "
+                 "accel,gyro,mag,baro\n";
     return 2;
   }
 
@@ -198,23 +200,26 @@ int main(int argc, char** argv)
   // Open one dated file named after the label.
   const std::string path = MakeFilename(outDir, label);
 
-  std::FILE* csv = std::fopen(path.c_str(), "w");
+  std::ofstream csv(path);
 
   if (!csv)
   {
-    std::fprintf(stderr, "error: cannot open '%s' for writing: %s\n",
-                 path.c_str(), std::strerror(errno));
+    std::cerr << "error: cannot open '" << path << "' for writing: "
+              << std::strerror(errno) << "\n";
     return 1;
   }
 
+  // Six significant digits per value (see WriteRow); set once for the file.
+  csv << std::setprecision(6);
+
   WriteHeader(csv, sensors);
-  std::printf("Recording '%s' (%s) at %.0f Hz to %s. Press Ctrl-C to stop.\n",
-              label.c_str(), sensorSpec.c_str(), rateHz, path.c_str());
+  std::cout << "Recording '" << label << "' (" << sensorSpec << ") at "
+            << std::fixed << std::setprecision(0) << rateHz << " Hz to " << path
+            << ". Press Ctrl-C to stop.\n";
 
   const int rc = Record(board, csv, rateHz, durationSec);
 
-  std::fflush(csv);
-  std::fclose(csv);
+  csv.close();
 
   return rc;
 }

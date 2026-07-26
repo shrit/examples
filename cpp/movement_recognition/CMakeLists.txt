@@ -71,7 +71,7 @@ set(DRIVER_SOURCES
 # Built for size (no exceptions/RTTI, dead-section stripped) so they stay in the
 # 150-170 KB range on the device.  They do not depend on mlpack/Armadillo.
 add_executable(imu_test driver/imu_test.cpp ${DRIVER_SOURCES})
-add_executable(collect  collect/collect_main.cpp ${DRIVER_SOURCES})
+add_executable(collect  collect/collect.cpp ${DRIVER_SOURCES})
 
 foreach(tool imu_test collect)
   target_compile_options(${tool} PRIVATE
