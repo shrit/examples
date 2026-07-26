@@ -7,7 +7,7 @@
  * into fixed-length windows, turned into FFT power-spectrum features, and used
  * to train a small f32 feed-forward network.
  *
- *   train DIR 64 model         # data dir, window 64, output prefix "model"
+ *   train DIR 256 model        # data dir, window 256, output directory "model"
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -218,11 +218,11 @@ double Accuracy(const arma::Row<size_t>& pred, const arma::Row<size_t>& truth)
 }
 
 // Train the network on the training split, report accuracy on the held-out test
-// split, and save the network to `out`.bin.  `patience` is the early-stopping
+// split, and save the network to `modelFile`.  `patience` is the early-stopping
 // patience.
 void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
              const arma::fmat& testData, const arma::Row<size_t>& testLabels,
-             size_t numClasses, size_t patience, const std::string& out)
+             size_t numClasses, size_t patience, const std::string& modelFile)
 {
   FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat> net;
   net.Add<Linear<arma::fmat>>(kHidden);
@@ -277,7 +277,7 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
   std::cout << "neural net test accuracy: " << Accuracy(pred, testLabels)
             << "\n";
 
-  data::Save(out + ".bin", "model", net, false);
+  data::Save(modelFile, "model", net, false);
 }
 
 }  // namespace
@@ -289,10 +289,10 @@ int main(int argc, char** argv)
   if (argc < 2)
   {
     std::cerr << "Usage: " << argv[0]
-              << " <data-dir> [window] [out-prefix] [patience] [test-split]"
+              << " <data-dir> [window] [out-dir] [patience] [test-split]"
                  " [step]\n"
-                 "  out-prefix may include a directory, e.g. models/act "
-                 "(default: models/model)\n";
+                 "  out-dir holds the model files model.bin, scaler.bin, "
+                 "model.labels (default: model)\n";
     return 1;
   }
 
@@ -302,11 +302,11 @@ int main(int argc, char** argv)
   // we are sampling at 100 HZ from the sensor. The user can adjust this if the
   // movements are slower or faster.
   const size_t window       = argc > 2 ? std::stoul(argv[2]) : 256;
-  // Output prefix for the model files.  It may include a directory (e.g.
-  // "models/act" writes models/act.bin, models/act_scaler.bin, models/act.labels)
-  // -- the directory is created below.  The default keeps every trained model
-  // together under a "models/" directory.
-  const std::string out     = argc > 3 ? argv[3] : "models/model";
+  // Output directory for the model.  The three files that make up a model are
+  // always written here under fixed, role-based names: model.bin (the network),
+  // scaler.bin (the feature scaler) and model.labels (the metadata).  Keeping
+  // one model per directory lets `infer` take just the directory.
+  const std::string outDir  = argc > 3 ? argv[3] : "model";
   const size_t patience     = argc > 4 ? std::stoul(argv[4]) : 10;
   const double testSplit    = argc > 5 ? std::stod(argv[5]) : 0.2;
   // Window step (samples between consecutive windows).  Default is a 50%
@@ -320,20 +320,18 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  // Create the output directory the prefix points into (if any), so all three
-  // model files land together (e.g. "models/act" -> the "models" directory).
-  const fs::path outDir = fs::path(out).parent_path();
-  if (!outDir.empty())
+  // Create the output directory, then build the three fixed file paths in it.
+  std::error_code ec;
+  fs::create_directories(outDir, ec);
+  if (ec)
   {
-    std::error_code ec;
-    fs::create_directories(outDir, ec);
-    if (ec)
-    {
-      std::cerr << "error: cannot create output directory '" << outDir.string()
-                << "': " << ec.message() << "\n";
-      return 1;
-    }
+    std::cerr << "error: cannot create output directory '" << outDir
+              << "': " << ec.message() << "\n";
+    return 1;
   }
+  const std::string modelFile  = (fs::path(outDir) / "model.bin").string();
+  const std::string scalerFile = (fs::path(outDir) / "scaler.bin").string();
+  const std::string labelsFile = (fs::path(outDir) / "model.labels").string();
 
   // Collect the CSV files in the data directory.
   std::vector<fs::path> files;
@@ -439,20 +437,20 @@ int main(int argc, char** argv)
   trainData = arma::conv_to<arma::fmat>::from(trainScaled);
   testData = arma::conv_to<arma::fmat>::from(testScaled);
 
-  // Saved as *_scaler.bin: data::Save picks the format from the file extension,
-  // so it must end in a recognized one (.bin here).
-  data::Save(out + "_scaler.bin", "scaler", scaler, false);
+  // data::Save picks the format from the file extension, so scaler.bin must end
+  // in a recognized one (.bin here).
+  data::Save(scalerFile, "scaler", scaler, false);
 
   TrainNN(trainData, trainLabels, testData, testLabels, classNames.size(),
-            patience, out);
+            patience, modelFile);
 
-  // Write the model metadata to prefix.labels: a small "key=value" text file
+  // Write the model metadata to model.labels: a small "key=value" text file
   // that infer reads to reproduce the exact features and label the predictions.
   // It holds three keys, for example:
   //     window=256                      (samples per window / FFT length)
   //     step=128                        (samples between consecutive windows)
   //     classes=sitting,walking,squat   (class names, in class-index order)
-  std::ofstream meta(out + ".labels");
+  std::ofstream meta(labelsFile);
   meta << "window=" << window << "\nstep=" << step << "\n";
 
   meta << "classes=";
@@ -462,7 +460,7 @@ int main(int argc, char** argv)
   }
   meta << "\n";
 
-  std::cout << "saved " << out << ".bin (+ " << out << ".labels, " << out
-            << "_scaler.bin)\n";
+  std::cout << "saved model to '" << outDir << "/' (model.bin, scaler.bin, "
+            << "model.labels)\n";
   return 0;
 }

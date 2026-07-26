@@ -7,11 +7,12 @@
  * for training (one arma::fft call) to get features, and classifies each window
  * with the f32 neural network trained by `train`.
  *
- * `train` writes three files per model: prefix.bin (the trained weights),
- * prefix_scaler.bin (the feature scaler) and prefix.labels (a text file listing
- * the window size, step, and class names).  ("-" for mag-cal skips it.)
+ * `train` writes a model as three files in one directory: model.bin (the
+ * trained weights), scaler.bin (the feature scaler) and model.labels (a text
+ * file listing the window size, step, and class names).  Point infer at that
+ * directory.  ("-" for mag-cal skips it.)
  *
- *   infer accel /dev/i2c-0 - model/act             # prints predictions to stdout
+ *   infer accel /dev/i2c-0 - model                 # prints predictions to stdout
  *
  * Everything runs in f32 to stay light on the 64 MB device.  The feature
  * extraction here is deliberately identical to train/train.cpp -- keep the two
@@ -27,6 +28,7 @@
 #include <chrono>
 #include <csignal>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -156,16 +158,16 @@ arma::fvec WindowToFeatures(const arma::fmat& win)
 using Network =
     FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat>;
 
-// Read the model's metadata from the "key=value" text file prefix.labels that
+// Read the model's metadata from the "key=value" text file model.labels that
 // train writes: the window size, window step, and class names.  Returns false
 // with a message if it is missing the essentials.
 bool LoadModelMetadata(const std::string& path, size_t& window, size_t& step,
                        std::vector<std::string>& classes)
 {
-  std::ifstream f(path + ".labels");
+  std::ifstream f(path);
   if (!f)
   {
-    std::cerr << "error: cannot read '" << path << ".labels'\n";
+    std::cerr << "error: cannot read '" << path << "'\n";
     return false;
   }
 
@@ -190,7 +192,7 @@ bool LoadModelMetadata(const std::string& path, size_t& window, size_t& step,
 
   if (window == 0 || classes.empty())
   {
-    std::cerr << "error: '" << path << ".labels' is missing window= or classes=\n";
+    std::cerr << "error: '" << path << "' is missing window= or classes=\n";
     return false;
   }
   return true;
@@ -271,12 +273,13 @@ int RunInference(const SensorBoard& board, Network& nn,
 int main(int argc, char** argv)
 {
   // Positional arguments: the sensors, the I2C device, the magnetometer
-  // calibration file ("-" to skip), and the trained-model prefix.  The sample
-  // rate is 100 Hz; the window and step come from the model's prefix.labels.
+  // calibration file ("-" to skip), and the directory train wrote the model to
+  // (model.bin, scaler.bin, model.labels).  The sample rate is 100 Hz; the
+  // window and step come from model.labels.
   if (argc != 5)
   {
     std::cerr << "Usage: " << argv[0]
-              << " <sensors> <device> <mag-cal> <model-prefix>\n"
+              << " <sensors> <device> <mag-cal> <model-dir>\n"
                  "  e.g. " << argv[0] << " accel /dev/i2c-0 - model\n";
     return 1;
   }
@@ -284,7 +287,7 @@ int main(int argc, char** argv)
   const std::string sensorSpec = argv[1];
   const std::string device     = argv[2];
   const std::string magCal     = std::string(argv[3]) == "-" ? "" : argv[3];
-  const std::string modelPath  = argv[4];
+  const std::string modelDir   = argv[4];
   const double rateHz = 100.0;
 
   Sensors sensors;
@@ -295,10 +298,16 @@ int main(int argc, char** argv)
     return 2;
   }
 
+  // The model's three files have fixed names inside the directory.
+  namespace fs = std::filesystem;
+  const std::string modelFile  = (fs::path(modelDir) / "model.bin").string();
+  const std::string scalerFile = (fs::path(modelDir) / "scaler.bin").string();
+  const std::string labelsFile = (fs::path(modelDir) / "model.labels").string();
+
   // Read the metadata (window/step/classes), then the network and its scaler.
   size_t window = 0, step = 0;
   std::vector<std::string> classes;
-  if (!LoadModelMetadata(modelPath, window, step, classes))
+  if (!LoadModelMetadata(labelsFile, window, step, classes))
     return 1;
   // Older label files have no step= line; fall back to a 50% overlap.
   if (step == 0)
@@ -306,8 +315,8 @@ int main(int argc, char** argv)
 
   Network nn;
   data::StandardScaler scaler;
-  data::Load(modelPath + ".bin", "model", nn, true);
-  data::Load(modelPath + "_scaler.bin", "scaler", scaler, true);
+  data::Load(modelFile, "model", nn, true);
+  data::Load(scalerFile, "scaler", scaler, true);
 
   // Quick dimension check before running the inference loop, Our target here
   // is to verify that the channels from the sensors and the features numbers
@@ -318,13 +327,13 @@ int main(int argc, char** argv)
       nn.InputDimensions().empty() ? 0 : nn.InputDimensions()[0];
   if (expected != featDim)
   {
-    std::cerr << "error: '" << modelPath << "' expects " << expected
+    std::cerr << "error: '" << modelDir << "' expects " << expected
               << " features but the chosen sensors/window produce " << featDim
               << " -- they must match training.\n";
     return 1;
   }
-  std::cerr << "loaded nn '" << modelPath << "' (window " << window << ", "
-            << classes.size() << " classes)\n";
+  std::cerr << "loaded model from '" << modelDir << "' (window " << window
+            << ", " << classes.size() << " classes)\n";
 
   // The whole GY-89 board behind one object: open the bus and bring up only the
   // sensors the model was trained on.
