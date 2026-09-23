@@ -9,14 +9,14 @@
  *
  * `train` writes a model as three files in one directory: model.bin (the
  * trained weights), scaler.bin (the feature scaler) and model.labels (a text
- * file listing the window size, step, and class names).  Point infer at that
- * directory.  ("-" for mag-cal skips it.)
+ * file listing the class names).  Point infer at that directory.
  *
- *   infer accel /dev/i2c-0 - model                 # prints predictions to stdout
+ *   infer accel /dev/i2c-0 model                   # prints predictions to stdout
  *
  * Everything runs in f32 to stay light on the 64 MB device.  The feature
  * extraction here is deliberately identical to train/train.cpp -- keep the two
- * in sync if you change one.
+ * in sync if you change one.  The window size and step are hardcoded constants
+ * (see main()) and MUST match the ones in train.cpp.
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -159,9 +159,10 @@ using Network =
     FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat>;
 
 // Read the model's metadata from the "key=value" text file model.labels that
-// train writes: the window size, window step, and class names.  Returns false
-// with a message if it is missing the essentials.
-bool LoadModelMetadata(const std::string& path, size_t& window, size_t& step,
+// train writes: the class names.  (The window size and step are hardcoded
+// constants shared by train and infer, so they are not stored here.)  Returns
+// false with a message if the class list is missing.
+bool LoadModelMetadata(const std::string& path,
                        std::vector<std::string>& classes)
 {
   std::ifstream f(path);
@@ -179,9 +180,7 @@ bool LoadModelMetadata(const std::string& path, size_t& window, size_t& step,
       continue;
     const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
 
-    if (key == "window") window = std::stoul(val);
-    else if (key == "step")   step = std::stoul(val);
-    else if (key == "classes")
+    if (key == "classes")
     {
       std::string c;
       std::stringstream ss(val);
@@ -190,9 +189,9 @@ bool LoadModelMetadata(const std::string& path, size_t& window, size_t& step,
     }
   }
 
-  if (window == 0 || classes.empty())
+  if (classes.empty())
   {
-    std::cerr << "error: '" << path << "' is missing window= or classes=\n";
+    std::cerr << "error: '" << path << "' is missing classes=\n";
     return false;
   }
   return true;
@@ -272,23 +271,25 @@ int RunInference(const SensorBoard& board, Network& nn,
 
 int main(int argc, char** argv)
 {
-  // Positional arguments: the sensors, the I2C device, the magnetometer
-  // calibration file ("-" to skip), and the directory train wrote the model to
-  // (model.bin, scaler.bin, model.labels).  The sample rate is 100 Hz; the
-  // window and step come from model.labels.
-  if (argc != 5)
+  // Positional arguments: the sensors, the I2C device, and the directory train
+  // wrote the model to (model.bin, scaler.bin, model.labels).  The sample rate
+  // is 100 Hz.  The window and step are hardcoded constants below and MUST
+  // match the ones in train.cpp.
+  if (argc != 4)
   {
     std::cerr << "Usage: " << argv[0]
-              << " <sensors> <device> <mag-cal> <model-dir>\n"
-                 "  e.g. " << argv[0] << " accel /dev/i2c-0 - model\n";
+              << " <sensors> <device> <model-dir>\n"
+                 "  e.g. " << argv[0] << " accel /dev/i2c-0 model\n";
     return 1;
   }
 
   const std::string sensorSpec = argv[1];
   const std::string device     = argv[2];
-  const std::string magCal     = std::string(argv[3]) == "-" ? "" : argv[3];
-  const std::string modelDir   = argv[4];
+  const std::string modelDir   = argv[3];
   const double rateHz = 100.0;
+  // Window size and step: must be identical to the constants in train.cpp.
+  const size_t window = 256;
+  const size_t step   = 128;
 
   Sensors sensors;
   if (!ParseSensors(sensorSpec, sensors))
@@ -304,14 +305,10 @@ int main(int argc, char** argv)
   const std::string scalerFile = (fs::path(modelDir) / "scaler.bin").string();
   const std::string labelsFile = (fs::path(modelDir) / "model.labels").string();
 
-  // Read the metadata (window/step/classes), then the network and its scaler.
-  size_t window = 0, step = 0;
+  // Read the class names from the metadata, then the network and its scaler.
   std::vector<std::string> classes;
-  if (!LoadModelMetadata(labelsFile, window, step, classes))
+  if (!LoadModelMetadata(labelsFile, classes))
     return 1;
-  // Older label files have no step= line; fall back to a 50% overlap.
-  if (step == 0)
-    step = std::max<size_t>(1, window / 2);
 
   Network nn;
   data::StandardScaler scaler;
@@ -338,7 +335,7 @@ int main(int argc, char** argv)
   // The whole GY-89 board behind one object: open the bus and bring up only the
   // sensors the model was trained on.
   SensorBoard board(device, sensors);
-  if (!board.Begin(magCal))
+  if (!board.Begin())
     return 1;
 
   std::signal(SIGINT, HandleSigint);

@@ -7,7 +7,10 @@
  * into fixed-length windows, turned into FFT power-spectrum features, and used
  * to train a small f32 feed-forward network.
  *
- *   train DIR 256 model        # data dir, window 256, output directory "model"
+ * The window size and step are hardcoded constants (kWindow / kStep) at the top
+ * of main(); edit them in the source if your movements are slower or faster.
+ *
+ *   train DIR model            # data dir, output directory "model"
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -73,7 +76,8 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
 
   if (raw.n_cols < window)
   {
-    std::cerr << " -- fewer than --window (" << window << ") samples, skipped\n";
+    std::cerr << " -- fewer than the window size (" << window
+              << ") samples, skipped\n";
     return false;
   }
 
@@ -284,35 +288,33 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
 
 int main(int argc, char** argv)
 {
+  // Window size and step are hardcoded for this example.  These movements can
+  // be executed in 2 ~ 3 seconds, and we sample at 100 Hz, so a 256-sample
+  // window works well; the step is a 50% overlap (window / 2).  Edit these two
+  // constants here (and the matching ones in infer.cpp) if your movements are
+  // slower or faster.  `infer` must use the same values.
+  const size_t window = 256;
+  const size_t step   = 128;
+
   // Arguments are positional: the data directory is required; the rest are
   // optional and fall back to sensible defaults if omitted.
   if (argc < 2)
   {
     std::cerr << "Usage: " << argv[0]
-              << " <data-dir> [window] [out-dir] [patience] [test-split]"
-                 " [step]\n"
+              << " <data-dir> [out-dir] [patience] [test-split]\n"
                  "  out-dir holds the model files model.bin, scaler.bin, "
                  "model.labels (default: model)\n";
     return 1;
   }
 
   const std::string dataDir = argv[1];
-  // Given that these movement can be executed in 2 ~ 3 seconds, we have
-  // decided that the window is the best with 256 sensor data point, given that
-  // we are sampling at 100 HZ from the sensor. The user can adjust this if the
-  // movements are slower or faster.
-  const size_t window       = argc > 2 ? std::stoul(argv[2]) : 256;
   // Output directory for the model.  The three files that make up a model are
   // always written here under fixed, role-based names: model.bin (the network),
   // scaler.bin (the feature scaler) and model.labels (the metadata).  Keeping
   // one model per directory lets `infer` take just the directory.
-  const std::string outDir  = argc > 3 ? argv[3] : "model";
-  const size_t patience     = argc > 4 ? std::stoul(argv[4]) : 10;
-  const double testSplit    = argc > 5 ? std::stod(argv[5]) : 0.2;
-  // Window step (samples between consecutive windows).  Default is a 50%
-  // overlap (window / 2); pass `window` for non-overlapping windows.
-  const size_t step         = argc > 6 ? std::stoul(argv[6])
-                                       : std::max<size_t>(1, window / 2);
+  const std::string outDir  = argc > 2 ? argv[2] : "model";
+  const size_t patience     = argc > 3 ? std::stoul(argv[3]) : 10;
+  const double testSplit    = argc > 4 ? std::stod(argv[4]) : 0.2;
 
   if (!fs::is_directory(dataDir))
   {
@@ -399,8 +401,8 @@ int main(int argc, char** argv)
   if (cols.size() < 2 || classNames.size() < 2)
   {
     std::cerr << "error: need >=2 windows and >=2 labels. Collect more data, "
-                 "or lower --window (currently " << window
-              << ") so short recordings yield windows.\n";
+                 "or lower the window size (currently " << window
+              << ") in the source so short recordings yield windows.\n";
     return 1;
   }
 
@@ -445,14 +447,11 @@ int main(int argc, char** argv)
             patience, modelFile);
 
   // Write the model metadata to model.labels: a small "key=value" text file
-  // that infer reads to reproduce the exact features and label the predictions.
-  // It holds three keys, for example:
-  //     window=256                      (samples per window / FFT length)
-  //     step=128                        (samples between consecutive windows)
+  // that infer reads to label the predictions.  The window and step are
+  // hardcoded constants shared by train and infer, so the only key here is the
+  // class list, for example:
   //     classes=sitting,walking,squat   (class names, in class-index order)
   std::ofstream meta(labelsFile);
-  meta << "window=" << window << "\nstep=" << step << "\n";
-
   meta << "classes=";
   for (size_t i = 0; i < classNames.size(); ++i)
   {
