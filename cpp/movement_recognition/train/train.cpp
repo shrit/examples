@@ -25,13 +25,12 @@
 #include <vector>
 
 #define MLPACK_ENABLE_ANN_SERIALIZATION
+#define MLPACK_ENABLE_ANN_SERIALIZATION_FMAT
 
 #include <mlpack.hpp>
 
 using namespace mlpack;
 
-// This is required to allow serialization of f32 data type matrices.
-CEREAL_REGISTER_MLPACK_LAYERS(arma::fmat);
 
 namespace fs = std::filesystem;
 
@@ -289,15 +288,12 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
 int main(int argc, char** argv)
 {
   // Window size and step are hardcoded for this example.  These movements can
-  // be executed in 2 ~ 3 seconds, and we sample at 100 Hz, so a 256-sample
-  // window works well; the step is a 50% overlap (window / 2).  Edit these two
-  // constants here (and the matching ones in infer.cpp) if your movements are
-  // slower or faster.  `infer` must use the same values.
+  // be executed in 2 ~ 3 seconds at 100 Hz. The step is a 50% overlap (window / 2).
+  // Edit these two constants here (and the matching ones in infer.cpp) if your movements are
+  // slower or faster.
   const size_t window = 256;
   const size_t step   = 128;
 
-  // Arguments are positional: the data directory is required; the rest are
-  // optional and fall back to sensible defaults if omitted.
   if (argc < 2)
   {
     std::cerr << "Usage: " << argv[0]
@@ -309,9 +305,7 @@ int main(int argc, char** argv)
 
   const std::string dataDir = argv[1];
   // Output directory for the model.  The three files that make up a model are
-  // always written here under fixed, role-based names: model.bin (the network),
-  // scaler.bin (the feature scaler) and model.labels (the metadata).  Keeping
-  // one model per directory lets `infer` take just the directory.
+  // model.bin (the network), scaler.bin (the feature scaler) and model.labels (the metadata).
   const std::string outDir  = argc > 2 ? argv[2] : "model";
   const size_t patience     = argc > 3 ? std::stoul(argv[3]) : 10;
   const double testSplit    = argc > 4 ? std::stod(argv[4]) : 0.2;
@@ -424,20 +418,12 @@ int main(int argc, char** argv)
             << " test\n";
 
   // Since we have features from time domain and frequency domain, it is
-  // better to standardize all of features to have similar scale.
-  // @rcurtin, the following two lines are not required once we merge the
-  // templetize scalar methods PR.
-  const arma::mat trainDouble = arma::conv_to<arma::mat>::from(trainData);
-  const arma::mat testDouble = arma::conv_to<arma::mat>::from(testData);
-
-  data::StandardScaler scaler;
-  scaler.Fit(trainDouble);
-
-  arma::mat trainScaled, testScaled;
-  scaler.Transform(trainDouble, trainScaled);
-  scaler.Transform(testDouble, testScaled);
-  trainData = arma::conv_to<arma::fmat>::from(trainScaled);
-  testData = arma::conv_to<arma::fmat>::from(testScaled);
+  // better to standardize all of features to have similar scale.  The scaler
+  // works directly on f32 matrices, so no double conversion is needed.
+  data::StandardScaler<arma::fmat> scaler;
+  scaler.Fit(trainData);
+  scaler.Transform(trainData, trainData);
+  scaler.Transform(testData, testData);
 
   // Save the scaler as a binary model file (data::BIN).
   data::Save(scalerFile, scaler, data::BIN);

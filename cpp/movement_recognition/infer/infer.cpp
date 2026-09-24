@@ -38,15 +38,13 @@
 // Enable mlpack's neural-network serialization so we can load the trained
 // network with data::Load (see the mnist_simple_f32 example).
 #define MLPACK_ENABLE_ANN_SERIALIZATION
+#define MLPACK_ENABLE_ANN_SERIALIZATION_FMAT
 #include <mlpack.hpp>
 
 #include "../driver/sensor_board.hpp"
 
 using namespace mlpack;
 
-// Register mlpack's layers for serialization, using f32 (arma::fmat) to match
-// the network we load.
-CEREAL_REGISTER_MLPACK_LAYERS(arma::fmat);
 
 namespace {
 
@@ -197,21 +195,19 @@ bool LoadModelMetadata(const std::string& path,
 }
 
 // Classify one feature column -> class name (arg-max of the network output).
-// Apply the SAME standardization train fitted (mlpack's scaler works in double)
+// Apply the SAME standardization train fitted (the scaler works in f32)
 // before predicting.
-std::string Classify(Network& nn, data::StandardScaler& scaler,
+std::string Classify(Network& nn, data::StandardScaler<arma::fmat>& scaler,
                      const std::vector<std::string>& classes,
                      const arma::fmat& feat)
 {
-
-  // Note to future Omar, need to remove the conversion here after I merge the
-  // scalar f32 PR.
-  // The same thing needs to be done in the training code function
-  arma::mat scaled;
-  scaler.Transform(arma::conv_to<arma::mat>::from(feat), scaled);
+  // The scaler works directly on f32 matrices, so no double conversion is
+  // needed.
+  arma::fmat scaled;
+  scaler.Transform(feat, scaled);
 
   arma::fmat scores;
-  nn.Predict(arma::conv_to<arma::fmat>::from(scaled), scores);
+  nn.Predict(scaled, scores);
   const size_t idx = scores.col(0).index_max();
   return idx < classes.size() ? classes[idx] : "?";
 }
@@ -222,7 +218,7 @@ std::string Classify(Network& nn, data::StandardScaler& scaler,
 // buffered, turn them into features, classify, print the prediction, and slide
 // the window forward by `step`.  Runs until Ctrl-C.
 int RunInference(const SensorBoard& board, Network& nn,
-                 data::StandardScaler& scaler,
+                 data::StandardScaler<arma::fmat>& scaler,
                  const std::vector<std::string>& classes,
                  size_t window, size_t step, double rateHz)
 {
@@ -310,17 +306,9 @@ int main(int argc, char** argv)
     return 1;
 
   Network nn;
-  data::StandardScaler scaler;
-  if (!data::Load(modelFile, nn, data::BIN))
-  {
-    std::cerr << "error: cannot load model from '" << modelFile << "'\n";
-    return 1;
-  }
-  if (!data::Load(scalerFile, scaler, data::BIN))
-  {
-    std::cerr << "error: cannot load scaler from '" << scalerFile << "'\n";
-    return 1;
-  }
+  data::StandardScaler<arma::fmat> scaler;
+  data::Load(modelFile, nn, data::BIN + data::Fatal);
+  data::Load(scalerFile, scaler, data::BIN + data::Fatal);
 
   // Quick dimension check before running the inference loop, Our target here
   // is to verify that the channels from the sensors and the features numbers
