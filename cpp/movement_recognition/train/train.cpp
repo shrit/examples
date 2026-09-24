@@ -281,7 +281,7 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
   std::cout << "neural net test accuracy: " << Accuracy(pred, testLabels)
             << "\n";
 
-  data::Save(modelFile, "model", net, false);
+  data::Save(modelFile, net, data::BIN);
 }
 
 }  // namespace
@@ -439,9 +439,8 @@ int main(int argc, char** argv)
   trainData = arma::conv_to<arma::fmat>::from(trainScaled);
   testData = arma::conv_to<arma::fmat>::from(testScaled);
 
-  // data::Save picks the format from the file extension, so scaler.bin must end
-  // in a recognized one (.bin here).
-  data::Save(scalerFile, "scaler", scaler, false);
+  // Save the scaler as a binary model file (data::BIN).
+  data::Save(scalerFile, scaler, data::BIN);
 
   TrainNN(trainData, trainLabels, testData, testLabels, classNames.size(),
             patience, modelFile);
