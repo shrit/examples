@@ -23,7 +23,6 @@
  * 3-clause BSD license along with mlpack.  If not, see
  * http://www.opensource.org/licenses/BSD-3-Clause for more information.
  */
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -312,8 +311,16 @@ int main(int argc, char** argv)
 
   Network nn;
   data::StandardScaler scaler;
-  data::Load(modelFile, "model", nn, true);
-  data::Load(scalerFile, "scaler", scaler, true);
+  if (!data::Load(modelFile, nn, data::BIN))
+  {
+    std::cerr << "error: cannot load model from '" << modelFile << "'\n";
+    return 1;
+  }
+  if (!data::Load(scalerFile, scaler, data::BIN))
+  {
+    std::cerr << "error: cannot load scaler from '" << scalerFile << "'\n";
+    return 1;
+  }
 
   // Quick dimension check before running the inference loop, Our target here
   // is to verify that the channels from the sensors and the features numbers
