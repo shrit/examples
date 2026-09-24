@@ -24,7 +24,6 @@
 #include "imu_sample.hpp"
 #include "l3gd20h.hpp"
 #include "lsm303d.hpp"
-#include "mag_calibration.hpp"
 
 /**
  * Composite 9-DOF IMU.  Construct it, call Begin(), then Sample() or
@@ -36,12 +35,6 @@ class IMU
   IMU(const I2CBus& bus,
       uint8_t gyroAddress = L3GD20H::kDefaultAddress,
       uint8_t accelMagAddress = LSM303D::kDefaultAddress);
-
-  //! Apply a magnetometer calibration to every subsequent sample.
-  void SetMagCalibration(const MagCalibration& calibration)
-  {
-    magCalibration = calibration;
-  }
 
   /**
    * Configure both chips and start the timestamp clock.  Prints a warning to
@@ -72,7 +65,6 @@ class IMU
  private:
   L3GD20H gyro;
   LSM303D accelMag;
-  MagCalibration magCalibration;  //!< identity until SetMagCalibration().
   std::chrono::steady_clock::time_point epoch;
 };
 

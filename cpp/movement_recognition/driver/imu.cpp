@@ -60,7 +60,6 @@ bool IMU::Sample(ImuSample& out) const
   if (!accelMag.ReadMag(out.mx, out.my, out.mz))
     return false;
 
-  magCalibration.Apply(out.mx, out.my, out.mz);
   return true;
 }
 
