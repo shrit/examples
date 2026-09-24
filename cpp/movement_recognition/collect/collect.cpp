@@ -6,14 +6,18 @@
  * depends only on the drivers in ../driver and argument parsing is hand-rolled,
  * so the binary stays tiny.
  *
- * - choose which sensors to record (`--sensors accel,gyro,mag,baro` or `all`);
+ * - choose which sensors to record with the positional `[sensors]` argument (a
+ *   comma list like `accel,gyro,mag,baro`, or `all`);
  * - timestamp every row with the Unix clock in microseconds;
  * - name the output file `<label>_<date>.csv`, so the label is the file name
  *   (there is no label column).
  *
+ * Recording runs for a fixed duration (the required duration-sec argument) and
+ * then stops on its own.
+ *
  * Examples:
- *   collect walking                       # all sensors, cwd, until Ctrl-C
- *   collect stairs_up accel,gyro data      # accel+gyro into data/
+ *   collect walking accel data /dev/i2c-0 100 30   # accel into data/ for 30 s
+ *   collect stairs_up accel,gyro data /dev/i2c-0 100 30
  *
  * mlpack is free software; you may redistribute it and/or modify it under the
  * terms of the 3-clause BSD license.  You should have received a copy of the
@@ -21,10 +25,8 @@
  * http://www.opensource.org/licenses/BSD-3-Clause for more information.
  */
 
-#include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -38,11 +40,6 @@
 
 namespace {
 
-std::atomic<bool> g_stop{false};
-
-void HandleSigint(int) { g_stop = true; }
-
-//! Microseconds since the Unix epoch (the device's real-time clock).
 uint64_t UnixMicros()
 {
   struct timespec ts;
@@ -50,7 +47,10 @@ uint64_t UnixMicros()
   return static_cast<uint64_t>(ts.tv_sec) * 1000000ull + ts.tv_nsec / 1000;
 }
 
-//! Build "<dir>/<label>_<YYYYmmdd-HHMMSS>.csv" from the current date.
+/*
+ * Save collected data set in the following format:
+ * "<dir>/<label>_<YYYYmmdd-HHMMSS>.csv".
+ */ 
 std::string MakeFilename(const std::string& dir, const std::string& label)
 {
   const time_t now = std::time(nullptr);
@@ -79,8 +79,6 @@ void WriteHeader(std::ostream& f, const Sensors& s)
 
 void WriteRow(std::ostream& f, const Sensors& s, uint64_t ts, const Reading& r)
 {
-  // Six significant digits per value, matching the sensors' precision (the
-  // stream keeps this setting between calls, so set it once at the start).
   const ImuSample& m = r.motion;
   f << ts;
   if (s.accel)
@@ -96,7 +94,7 @@ void WriteRow(std::ostream& f, const Sensors& s, uint64_t ts, const Reading& r)
 }
 
 // Sample the board at `rateHz`, writing one CSV row per sample until the
-// duration elapses or Ctrl-C is pressed.
+// duration elapses.
 int Record(const SensorBoard& board, std::ostream& csv,
            double rateHz, double durationSec)
 {
@@ -112,7 +110,7 @@ int Record(const SensorBoard& board, std::ostream& csv,
   uint64_t count = 0, firstTs = 0, lastTs = 0;
   steady_clock::time_point nextTick = steady_clock::now();
 
-  while (!g_stop.load())
+  while (true)
   {
     const uint64_t ts = UnixMicros();
 
@@ -135,7 +133,7 @@ int Record(const SensorBoard& board, std::ostream& csv,
     if (++count % kProgressEvery == 0)
       std::cout << "\r  " << count << " samples..." << std::flush;
 
-    if (durationMicros > 0 && ts - firstTs >= durationMicros)
+    if (ts - firstTs >= durationMicros)
       break;
 
     nextTick += period;
@@ -154,13 +152,11 @@ int Record(const SensorBoard& board, std::ostream& csv,
 
 int main(int argc, char** argv)
 {
-  // Arguments are positional: the label is required (it becomes the CSV file
-  // name); the rest are optional and fall back to sensible defaults if omitted.
-  // For device pass "/dev/i2c-0" and for mag-cal pass "-" to skip it.
   if (argc < 2)
   {
     std::cerr << "Usage: " << argv[0] << " <label> [sensors] [out-dir] [device]"
-                 " [rate-hz] [duration-sec] [mag-cal]\n";
+                 " [rate-hz] <duration-sec>\n"
+                 "  duration-sec is required and must be > 0\n";
     return 1;
   }
 
@@ -170,12 +166,16 @@ int main(int argc, char** argv)
   const std::string device     = argc > 4 ? argv[4] : "/dev/i2c-0";
   const double rateHz          = argc > 5 ? std::stod(argv[5]) : 100.0;
   const double durationSec     = argc > 6 ? std::stod(argv[6]) : 0.0;
-  const std::string magCal     = (argc > 7 && std::string(argv[7]) != "-")
-                                     ? argv[7] : "";
 
   if (rateHz <= 0.0)
   {
     std::cerr << "error: rate-hz must be > 0\n";
+    return 2;
+  }
+
+  if (durationSec <= 0.0)
+  {
+    std::cerr << "error: duration-sec is required and must be > 0\n";
     return 2;
   }
 
@@ -192,10 +192,8 @@ int main(int argc, char** argv)
   // selected sensors.
   SensorBoard board(device, sensors);
 
-  if (!board.Begin(magCal))
+  if (!board.Begin())
     return 1;
-
-  std::signal(SIGINT, HandleSigint);
 
   // Open one dated file named after the label.
   const std::string path = MakeFilename(outDir, label);
@@ -215,7 +213,7 @@ int main(int argc, char** argv)
   WriteHeader(csv, sensors);
   std::cout << "Recording '" << label << "' (" << sensorSpec << ") at "
             << std::fixed << std::setprecision(0) << rateHz << " Hz to " << path
-            << ". Press Ctrl-C to stop.\n";
+            << " for " << durationSec << " s.\n";
 
   const int rc = Record(board, csv, rateHz, durationSec);
 
