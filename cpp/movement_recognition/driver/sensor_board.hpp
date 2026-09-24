@@ -31,7 +31,6 @@
 #include "i2c_bus.hpp"
 #include "imu.hpp"
 #include "imu_sample.hpp"
-#include "mag_calibration.hpp"
 
 //! Which sensors to record.  accel/gyro/mag come from the IMU; baro is the
 //! BMP180.
@@ -112,14 +111,13 @@ class SensorBoard
   const Sensors& Selected() const { return sensors; }
 
   /**
-   * Open the I2C bus and bring up every selected sensor, applying the
-   * magnetometer calibration file if one was given.  A chip that fails to
+   * Open the I2C bus and bring up every selected sensor.  A chip that fails to
    * identify is only a warning, so a partly-populated board can still be
    * recorded; the one hard error is the bus failing to open.
    *
    * @return false only if the I2C bus could not be opened.
    */
-  bool Begin(const std::string& magCal = "");
+  bool Begin();
 
   //! Read one sample of all selected sensors.  False on an I2C error.
   bool Read(Reading& out) const;
@@ -132,7 +130,7 @@ class SensorBoard
   BMP180 baro;
 };
 
-inline bool SensorBoard::Begin(const std::string& magCal)
+inline bool SensorBoard::Begin()
 {
   if (!bus.IsOpen())
   {
@@ -147,23 +145,6 @@ inline bool SensorBoard::Begin(const std::string& magCal)
       std::printf("IMU detected (sensor identities OK).\n");
     else
       std::printf("Proceeding despite the IMU warning(s) above.\n");
-
-    if (!magCal.empty())
-    {
-      MagCalibration cal;
-      if (cal.Load(magCal.c_str()))
-      {
-        imu.SetMagCalibration(cal);
-        std::printf("Applied magnetometer calibration from %s.\n",
-                    magCal.c_str());
-      }
-      else
-      {
-        std::fprintf(stderr,
-                     "warning: could not read mag calibration '%s'; using raw.\n",
-                     magCal.c_str());
-      }
-    }
   }
 
   if (sensors.baro)
