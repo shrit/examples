@@ -22,7 +22,7 @@ Wire the GY-89 to the Milk-V Duo's I²C0 bus (the default `/dev/i2c-0`):
 <img src="doc/wiring_src/figures/wiring_gy89_duo.png" width="620" alt="Wiring the GY-89 IMU breakout to the Milk-V Duo over I2C0: SCL to pin 1 (GP0), SDA to pin 2 (GP1), VIN to pin 36 (3V3 out), and GND to pin 38" />
 </center>
 
-GP0/GP1 usually default to another function, so mux them to I²C first:
+GP0/GP1 usually default to another function, so mux them to I2C first:
 
 ```sh
 duo-pinmux -p GP0 -f IIC0_SCL
@@ -32,8 +32,9 @@ i2cdetect -y -r 0             # should show devices at 0x1d and 0x6b
 
 ## Building
 
-Plain C++17, one CMake project.  `imu_test` and `collect` need only the Linux
-I²C headers; `train` and `infer` link mlpack, which CMake fetches for you.
+All of the Four binaries can be built with one CMake project, `imu_test`
+and `collect` need only the Linux I2C headers, While `train` and `infer`
+link against mlpack and its dependencies. All of them are fetched by CMake.
 
 ### Host build
 
@@ -54,11 +55,12 @@ TC=/path/to/riscv64-lp64d--musl--stable-2025.08-1
 cmake -DCMAKE_CROSSCOMPILING=ON -DARCH_NAME=RV64GCV \
       -DCMAKE_TOOLCHAIN_FILE=../CMake/crosscompile-toolchain.cmake \
       -DTOOLCHAIN_PREFIX=$TC/bin/riscv64-buildroot-linux-musl- \
-      -DCMAKE_SYSROOT=$TC/riscv64-buildroot-linux-musl/sysroot ..
+      -DCMAKE_SYSROOT=$TC/riscv64-buildroot-linux-musl/sysroot \
+      -DOPENBLAS_PATCHES=../CMake/patches/openblas-riscv64-low-memory.patch ..
 make                          # -> static build/{imu_test,collect,train,infer}
 ```
 
-Copy the static binaries to the board (BusyBox has no SFTP, so use `scp -O`):
+Copy the static binaries to the board:
 
 ```sh
 scp -O imu_test collect train infer  root@192.168.42.1:/root/

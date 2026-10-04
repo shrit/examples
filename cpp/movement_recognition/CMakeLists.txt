@@ -14,7 +14,8 @@
 #   cmake -DCMAKE_CROSSCOMPILING=ON -DARCH_NAME=RV64GCV \
 #         -DCMAKE_TOOLCHAIN_FILE=../CMake/crosscompile-toolchain.cmake \
 #         -DTOOLCHAIN_PREFIX=/path/to/.../bin/riscv64-buildroot-linux-musl- \
-#         -DCMAKE_SYSROOT=/path/to/.../riscv64-buildroot-linux-musl/sysroot ..
+#         -DCMAKE_SYSROOT=/path/to/.../riscv64-buildroot-linux-musl/sysroot \
+#         -DOPENBLAS_PATCHES=../CMake/patches/openblas-riscv64-low-memory.patch ..
 #   make
 #
 # Build a single program with, e.g., `make collect` or `make train`.
