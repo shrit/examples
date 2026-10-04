@@ -51,14 +51,8 @@ namespace {
 std::atomic<bool> g_stop{false};
 void HandleSigint(int) { g_stop = true; }
 
-// Sensors / ParseSensors come from the driver's sensor_board.hpp, shared with
-// collect so the two agree on the canonical channel order: accel, gyro, mag,
-// baro (the same order collect writes to CSV and train consumes).
-
-// --- the two functions that "organize the data for the FFT" ----------------
-
-// One board reading -> a column of the active channels, in the canonical order.
-// This is how an arbitrary set of sensors becomes a fixed-height feature column.
+// Read the data from the sensors in the same order that has been used in
+// collect.cpp, if the order changes there, then this one needs to be adapted.
 arma::fvec SampleToColumn(const Sensors& s, const Reading& r)
 {
   const ImuSample& m = r.motion;
@@ -268,7 +262,7 @@ int main(int argc, char** argv)
 {
   // Positional arguments: the sensors, the I2C device, and the directory train
   // wrote the model to (model.bin, scaler.bin, model.labels).  The sample rate
-  // is 100 Hz.  The window and step are hardcoded constants below and MUST
+  // is 100 Hz.  The window and step are hardcoded constants below and must
   // match the ones in train.cpp.
   if (argc != 4)
   {

@@ -55,14 +55,11 @@ bool LoadRecording(const fs::path& path, size_t window, arma::fmat& raw)
   // mlpack loads text column-major, so each CSV column becomes a row.
   data::TextOptions opts;
   opts.HasHeaders() = true;
+  opts.Fatal() = true;
 
   std::cerr << "  load " << path.filename().string() << " ... ";
 
-  if (!data::Load(path.string(), raw, opts))
-  {
-    std::cerr << "FAILED to load (skipped)\n";
-    return false;
-  }
+  data::Load(path.string(), raw, opts);
 
   std::cerr << "loaded " << raw.n_rows << " channels(+ts) x " << raw.n_cols
             << " samples";
