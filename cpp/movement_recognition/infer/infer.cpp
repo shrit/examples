@@ -7,9 +7,8 @@
  * for training (one arma::fft call) to get features, and classifies each window
  * with the f32 neural network trained by `train`.
  *
- * `train` writes a model as three files in one directory: model.bin (the
- * trained weights), scaler.bin (the feature scaler) and model.labels (a text
- * file listing the class names).  Point infer at that directory.
+ * `train` writes the network, feature scaler, and class names together into a
+ * single model.bin in a directory.  Point infer at that directory.
  *
  *   infer accel /dev/i2c-0 model                   # prints predictions to stdout
  *
@@ -41,6 +40,7 @@
 #define MLPACK_ENABLE_ANN_SERIALIZATION_FMAT
 #include <mlpack.hpp>
 
+#include "../model.hpp"
 #include "../driver/sensor_board.hpp"
 
 using namespace mlpack;
@@ -146,48 +146,6 @@ arma::fvec WindowToFeatures(const arma::fmat& win)
                          arma::median(win, 1));
 }
 
-using Network =
-    FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat>;
-
-// Read the model's metadata from the "key=value" text file model.labels that
-// train writes: the class names.  (The window size and step are hardcoded
-// constants shared by train and infer, so they are not stored here.)  Returns
-// false with a message if the class list is missing.
-bool LoadModelMetadata(const std::string& path,
-                       std::vector<std::string>& classes)
-{
-  std::ifstream f(path);
-  if (!f)
-  {
-    std::cerr << "error: cannot read '" << path << "'\n";
-    return false;
-  }
-
-  std::string line;
-  while (std::getline(f, line))
-  {
-    const size_t eq = line.find('=');
-    if (eq == std::string::npos)
-      continue;
-    const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
-
-    if (key == "classes")
-    {
-      std::string c;
-      std::stringstream ss(val);
-      while (std::getline(ss, c, ','))
-        classes.push_back(c);
-    }
-  }
-
-  if (classes.empty())
-  {
-    std::cerr << "error: '" << path << "' is missing classes=\n";
-    return false;
-  }
-  return true;
-}
-
 // Classify one feature column -> class name (arg-max of the network output).
 // Apply the SAME standardization train fitted (the scaler works in f32)
 // before predicting.
@@ -261,9 +219,8 @@ int RunInference(const SensorBoard& board, Network& nn,
 int main(int argc, char** argv)
 {
   // Positional arguments: the sensors, the I2C device, and the directory train
-  // wrote the model to (model.bin, scaler.bin, model.labels).  The sample rate
-  // is 100 Hz.  The window and step are hardcoded constants below and must
-  // match the ones in train.cpp.
+  // wrote model.bin to.  The sample rate is 100 Hz.  The window and step are
+  // hardcoded constants below and must match the ones in train.cpp.
   if (argc != 4)
   {
     std::cerr << "Usage: " << argv[0]
@@ -288,21 +245,13 @@ int main(int argc, char** argv)
     return 2;
   }
 
-  // The model's three files have fixed names inside the directory.
+  // The model lives in one file inside the directory.
   namespace fs = std::filesystem;
-  const std::string modelFile  = (fs::path(modelDir) / "model.bin").string();
-  const std::string scalerFile = (fs::path(modelDir) / "scaler.bin").string();
-  const std::string labelsFile = (fs::path(modelDir) / "model.labels").string();
+  const std::string modelFile = (fs::path(modelDir) / "model.bin").string();
 
-  // Read the class names from the metadata, then the network and its scaler.
-  std::vector<std::string> classes;
-  if (!LoadModelMetadata(labelsFile, classes))
-    return 1;
-
-  Network nn;
-  data::StandardScaler<arma::fmat> scaler;
-  data::Load(modelFile, nn, data::BIN + data::Fatal);
-  data::Load(scalerFile, scaler, data::BIN + data::Fatal);
+  // Load the network, scaler, and class names in one shot.
+  MovementModel model;
+  data::Load(modelFile, model, data::BIN + data::Fatal);
 
   // Quick dimension check before running the inference loop, Our target here
   // is to verify that the channels from the sensors and the features numbers
@@ -310,7 +259,7 @@ int main(int argc, char** argv)
   const size_t featDim =
       sensors.Channels() * (window / 2 + 1) + sensors.Channels() * 3;
   const size_t expected =
-      nn.InputDimensions().empty() ? 0 : nn.InputDimensions()[0];
+      model.net.InputDimensions().empty() ? 0 : model.net.InputDimensions()[0];
   if (expected != featDim)
   {
     std::cerr << "error: '" << modelDir << "' expects " << expected
@@ -319,7 +268,7 @@ int main(int argc, char** argv)
     return 1;
   }
   std::cerr << "loaded model from '" << modelDir << "' (window " << window
-            << ", " << classes.size() << " classes)\n";
+            << ", " << model.classes.size() << " classes)\n";
 
   // The whole GY-89 board behind one object: open the bus and bring up only the
   // sensors the model was trained on.
@@ -329,5 +278,6 @@ int main(int argc, char** argv)
 
   std::signal(SIGINT, HandleSigint);
 
-  return RunInference(board, nn, scaler, classes, window, step, rateHz);
+  return RunInference(board, model.net, model.scaler, model.classes,
+                      window, step, rateHz);
 }

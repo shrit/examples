@@ -29,6 +29,8 @@
 
 #include <mlpack.hpp>
 
+#include "../model.hpp"
+
 using namespace mlpack;
 
 
@@ -218,13 +220,11 @@ double Accuracy(const arma::Row<size_t>& pred, const arma::Row<size_t>& truth)
 }
 
 // Train the network on the training split, report accuracy on the held-out test
-// split, and save the network to `modelFile`.  `patience` is the early-stopping
-// patience.
+// split, and fill `net`.  `patience` is the early-stopping patience.
 void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
              const arma::fmat& testData, const arma::Row<size_t>& testLabels,
-             size_t numClasses, size_t patience, const std::string& modelFile)
+             size_t numClasses, size_t patience, Network& net)
 {
-  FFN<NegativeLogLikelihoodType<arma::fmat>, GlorotInitialization, arma::fmat> net;
   net.Add<Linear<arma::fmat>>(kHidden);
   net.Add<ReLU<arma::fmat>>();
   net.Add<Linear<arma::fmat>>(numClasses);
@@ -276,8 +276,6 @@ void TrainNN(const arma::fmat& trainData, const arma::Row<size_t>& trainLabels,
   }
   std::cout << "neural net test accuracy: " << Accuracy(pred, testLabels)
             << "\n";
-
-  data::Save(modelFile, net, data::BIN);
 }
 
 }  // namespace
@@ -295,14 +293,13 @@ int main(int argc, char** argv)
   {
     std::cerr << "Usage: " << argv[0]
               << " <data-dir> [out-dir] [patience] [test-split]\n"
-                 "  out-dir holds the model files model.bin, scaler.bin, "
-                 "model.labels (default: model)\n";
+                 "  out-dir holds the model file model.bin (default: model)\n";
     return 1;
   }
 
   const std::string dataDir = argv[1];
-  // Output directory for the model.  The three files that make up a model are
-  // model.bin (the network), scaler.bin (the feature scaler) and model.labels (the metadata).
+  // Output directory for the model; the network, scaler, and class names are
+  // all serialized together into model.bin.
   const std::string outDir  = argc > 2 ? argv[2] : "model";
   const size_t patience     = argc > 3 ? std::stoul(argv[3]) : 10;
   const double testSplit    = argc > 4 ? std::stod(argv[4]) : 0.2;
@@ -322,9 +319,7 @@ int main(int argc, char** argv)
               << "': " << ec.message() << "\n";
     return 1;
   }
-  const std::string modelFile  = (fs::path(outDir) / "model.bin").string();
-  const std::string scalerFile = (fs::path(outDir) / "scaler.bin").string();
-  const std::string labelsFile = (fs::path(outDir) / "model.labels").string();
+  const std::string modelFile = (fs::path(outDir) / "model.bin").string();
 
   // Collect the CSV files in the data directory.
   std::vector<fs::path> files;
@@ -417,31 +412,18 @@ int main(int argc, char** argv)
   // Since we have features from time domain and frequency domain, it is
   // better to standardize all of features to have similar scale.  The scaler
   // works directly on f32 matrices, so no double conversion is needed.
-  data::StandardScaler<arma::fmat> scaler;
-  scaler.Fit(trainData);
-  scaler.Transform(trainData, trainData);
-  scaler.Transform(testData, testData);
-
-  // Save the scaler as a binary model file (data::BIN).
-  data::Save(scalerFile, scaler, data::BIN);
+  MovementModel model;
+  model.classes = classNames;
+  model.scaler.Fit(trainData);
+  model.scaler.Transform(trainData, trainData);
+  model.scaler.Transform(testData, testData);
 
   TrainNN(trainData, trainLabels, testData, testLabels, classNames.size(),
-            patience, modelFile);
+            patience, model.net);
 
-  // Write the model metadata to model.labels: a small "key=value" text file
-  // that infer reads to label the predictions.  The window and step are
-  // hardcoded constants shared by train and infer, so the only key here is the
-  // class list, for example:
-  //     classes=sitting,walking,squat   (class names, in class-index order)
-  std::ofstream meta(labelsFile);
-  meta << "classes=";
-  for (size_t i = 0; i < classNames.size(); ++i)
-  {
-    meta << (i ? "," : "") << classNames[i];
-  }
-  meta << "\n";
+  // Serialize the network, scaler, and class names together into model.bin.
+  data::Save(modelFile, model, data::BIN);
 
-  std::cout << "saved model to '" << outDir << "/' (model.bin, scaler.bin, "
-            << "model.labels)\n";
+  std::cout << "saved model to '" << modelFile << "'\n";
   return 0;
 }
