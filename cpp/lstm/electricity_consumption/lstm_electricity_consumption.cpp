@@ -10,7 +10,7 @@
  * 3-clause BSD license along with mlpack.  If not, see
  * http://www.opensource.org/licenses/BSD-3-Clause for more information.
  *
- * @file LSTMTimeSeriesUnivariate.cpp
+ * @file lstm_electricity_consumption.cpp
  * @author Mehul Kumar Nirala
  * @author Zoltan Somogyi
  */
