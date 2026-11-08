@@ -101,7 +101,7 @@ class SensorBoard
   SensorBoard(const std::string& devicePath, const Sensors& selected)
       : device(devicePath),
         sensors(selected),
-        bus(device.c_str()),   // members init in declaration order: device, then bus
+        bus(device.c_str()),
         imu(bus),
         baro(bus)
   {
