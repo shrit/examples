@@ -8,9 +8,6 @@
 #ifndef MOVEMENT_RECOGNITION_MODEL_HPP
 #define MOVEMENT_RECOGNITION_MODEL_HPP
 
-#include <string>
-#include <vector>
-
 #include <mlpack.hpp>
 
 struct MovementModel
