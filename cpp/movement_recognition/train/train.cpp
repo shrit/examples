@@ -363,7 +363,7 @@ int main(int argc, char** argv)
       ExtractWindows(raw, window, step, classIdx, cols, labels);
   }
 
-  // Every file must yield the same feature length (same sensors + window).
+  // Every file must have the same feature length (same sensors + window).
   const size_t feat = cols.empty() ? 0 : cols[0].n_elem;
   for (size_t i = 0; i < cols.size(); ++i)
   {
