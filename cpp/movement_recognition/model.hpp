@@ -13,12 +13,11 @@
 
 #include <mlpack.hpp>
 
-using Network = mlpack::FFN<mlpack::NegativeLogLikelihoodType<arma::fmat>,
-                            mlpack::GlorotInitialization, arma::fmat>;
-
 struct MovementModel
 {
-  Network net;
+  mlpack::FFN<mlpack::NegativeLogLikelihoodType<arma::fmat>,
+              mlpack::GlorotInitialization,
+              arma::fmat> net;
   mlpack::data::StandardScaler<arma::fmat> scaler;
   std::vector<std::string> classes;
 
