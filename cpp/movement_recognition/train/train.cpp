@@ -388,7 +388,7 @@ int main(int argc, char** argv)
   {
     std::cerr << "error: need >=2 windows and >=2 labels. Collect more data, "
                  "or lower the window size (currently " << window
-              << ") in the source so short recordings yield windows.\n";
+              << ") in the source so short recordings have more windows.\n";
     return 1;
   }
 
