@@ -34,7 +34,7 @@ i2cdetect -y -r 0             # should show devices at 0x1d and 0x6b
 
 All of the Four binaries can be built with one CMake project, `imu_test`
 and `collect` need only the Linux I2C headers, While `train` and `infer`
-link against mlpack and its dependencies. All of them are fetched by CMake.
+link against mlpack and its dependencies. All dependencies are fetched by CMake.
 
 ### Host build
 
