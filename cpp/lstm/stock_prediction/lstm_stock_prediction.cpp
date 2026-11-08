@@ -8,7 +8,7 @@
  * 3-clause BSD license along with mlpack.  If not, see
  * http://www.opensource.org/licenses/BSD-3-Clause for more information.
  *
- * @file LSTMTimeSeriesMultivariate.cpp
+ * @file lstm_stock_prediction.cpp
  * @author Mehul Kumar Nirala.
  * @author Zoltan Somogyi
  */
